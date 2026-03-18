@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
 		'example1  = ballbot.example1:main',
+        'encoder_read = ballbot.encoder_read:main',
         ],
     },
 )
