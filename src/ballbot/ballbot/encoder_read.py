@@ -1,10 +1,12 @@
 import rclpy    # pyright: ignore[reportMissingImports]
 from rclpy.node import Node # pyright: ignore[reportMissingImports]
 from std_msgs.msg import Int32  # pyright: ignore[reportMissingImports]
+from std_msgs.msg import Int32MultiArray
 
 from gpiozero import Button
 
-ENCODER_PIN = 23   # numer BCM
+ENCODER_PIN_B = 23   # pin B of the encoder
+ENCODER_PIN_A = 24   # pin A of the encoder
 
 
 class EncoderNode(Node):
@@ -12,21 +14,28 @@ class EncoderNode(Node):
     def __init__(self):
         super().__init__('encoder_node')
 
-        self.publisher_ = self.create_publisher(Int32, 'encoder_ticks', 10)
+        self.publisher_ = self.create_publisher(Int32MultiArray, 'encoder_ticks', 10)
 
-        self.count = 0
+        self.count_A = 0
+        self.count_B = 0
 
-        self.encoder_button = Button(ENCODER_PIN, pull_up=True)
-        self.encoder_button.when_pressed = self.encoder_callback
+        self.encoder_button_B = Button(ENCODER_PIN_B, pull_up=True)
+        self.encoder_button_B.when_pressed = self.encoder_callback_B
 
-        self.timer = self.create_timer(0.01, self.publish_ticks)
+        self.encoder_button_A = Button(ENCODER_PIN_A, pull_up=True)
+        self.encoder_button_A.when_pressed = self.encoder_callback_A
 
-    def encoder_callback(self, channel):
-        self.count += 1
+        self.timer = self.create_timer(0.003, self.publish_ticks)
+
+    def encoder_callback_A(self):
+        self.count_A += 1
+
+    def encoder_callback_B(self):
+        self.count_B += 1
 
     def publish_ticks(self):
-        msg = Int32()
-        msg.data = self.count
+        msg = Int32MultiArray()
+        msg.data = [self.count_A, self.count_B]
         self.publisher_.publish(msg)
 
 
