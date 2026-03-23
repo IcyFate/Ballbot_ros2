@@ -4,8 +4,8 @@ from std_msgs.msg import Float32
 import pigpio
 
 
-PIN_RPWM = 4
-PIN_LPWM = 19
+PIN_RPWM = 19
+PIN_LPWM = 4
 PIN_REN = 3
 PIN_LEN = 2
 
@@ -16,7 +16,7 @@ PWM_RANGE = 255
 class MotorNode(Node):
 
     def __init__(self):
-        super().__init__('motor_node')
+        super().__init__('DC_PWM')
 
         self.sub = self.create_subscription(
             Float32,
