@@ -1,12 +1,13 @@
-import rclpy    # pyright: ignore[reportMissingImports]
-from rclpy.node import Node # pyright: ignore[reportMissingImports]
-from std_msgs.msg import Int32  # pyright: ignore[reportMissingImports]
+import rclpy
+from rclpy.node import Node
 from std_msgs.msg import Int32MultiArray
 
-from gpiozero import Button
+from gpiozero import DigitalInputDevice
+import time
 
-ENCODER_PIN_B = 23   # pin B of the encoder
-ENCODER_PIN_A = 24   # pin A of the encoder
+
+PIN_A = 24
+PIN_B = 23
 
 
 class EncoderNode(Node):
@@ -14,28 +15,63 @@ class EncoderNode(Node):
     def __init__(self):
         super().__init__('encoder_node')
 
-        self.publisher_ = self.create_publisher(Int32MultiArray, 'encoder_ticks', 10)
+        self.publisher_ = self.create_publisher(
+            Int32MultiArray,
+            'encoder_state',
+            10
+        )
+        
+        self.position = 0   # stan pozycji (ticki kwadraturowe)
 
-        self.count_A = 0
-        self.count_B = 0
+        self.prev_state = 0     # poprzedni stan AB
+        
+        self.prev_position = 0  # do estymacji prędkości
+        self.prev_time = time.monotonic()
 
-        self.encoder_button_B = Button(ENCODER_PIN_B, pull_up=True)
-        self.encoder_button_B.when_pressed = self.encoder_callback_B
+        self.encA = DigitalInputDevice(PIN_A, pull_up=True) # wejścia GPIO
+        self.encB = DigitalInputDevice(PIN_B, pull_up=True)
 
-        self.encoder_button_A = Button(ENCODER_PIN_A, pull_up=True)
-        self.encoder_button_A.when_pressed = self.encoder_callback_A
+        self.prev_state = (self.encA.value << 1) | self.encB.value  # inicjalny stan
 
-        self.timer = self.create_timer(0.003, self.publish_ticks)
+        self.encA.when_activated = self.update      # callback na oba zbocza
+        self.encA.when_deactivated = self.update
+        self.encB.when_activated = self.update
+        self.encB.when_deactivated = self.update
 
-    def encoder_callback_A(self):
-        self.count_A += 1
+        self.timer = self.create_timer(0.001, self.publish_state)   # ~333 Hz publikacja stanu
 
-    def encoder_callback_B(self):
-        self.count_B += 1
+        self.lookup = {       # tablica dekodera quadrature
+            0b0001: +1,
+            0b0010: -1,
+            0b0100: -1,
+            0b0111: +1,
+            0b1000: +1,
+            0b1011: -1,
+            0b1101: -1,
+            0b1110: +1,
+        }
 
-    def publish_ticks(self):
+    def update(self):
+        state = (self.encA.value << 1) | self.encB.value
+        transition = (self.prev_state << 2) | state
+
+        if transition in self.lookup:
+            self.position += self.lookup[transition]
+
+        self.prev_state = state
+
+    def publish_state(self):
+        now = time.monotonic()
+        dt = now - self.prev_time
+
+        pos = self.position
+        vel = (pos - self.prev_position) / dt
+
+        self.prev_position = pos
+        self.prev_time = now
+
         msg = Int32MultiArray()
-        msg.data = [self.count_A, self.count_B]
+        msg.data = [int(pos), int(vel)]
         self.publisher_.publish(msg)
 
 
