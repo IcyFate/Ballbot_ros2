@@ -16,6 +16,7 @@
   <depend>action_msgs</depend>
   <depend>gpiozero</depend>
   <depend>pigpio</depend>
+  <depend>time</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

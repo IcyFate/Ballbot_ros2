@@ -2,7 +2,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Int32MultiArray
 
-from gpiozero import DigitalInputDevice
+import pigpio
 import time
 
 
@@ -20,45 +20,43 @@ class EncoderNode(Node):
             'encoder_state',
             10
         )
-        
-        self.position = 0   # stan pozycji (ticki kwadraturowe)
 
-        self.prev_state = 0     # poprzedni stan AB
-        
-        self.prev_position = 0  # do estymacji prędkości
+        self.pi = pigpio.pi()
+        if not self.pi.connected:
+            raise RuntimeError("pigpiod not running")
+
+        self.pi.set_mode(PIN_A, pigpio.INPUT)
+        self.pi.set_mode(PIN_B, pigpio.INPUT)
+        self.pi.set_pull_up_down(PIN_A, pigpio.PUD_UP)
+        self.pi.set_pull_up_down(PIN_B, pigpio.PUD_UP)
+
+        self.position = 0
+
+        self.prev_position = 0
         self.prev_time = time.monotonic()
 
-        self.encA = DigitalInputDevice(PIN_A, pull_up=True) # wejścia GPIO
-        self.encB = DigitalInputDevice(PIN_B, pull_up=True)
+        # callback osobno dla A i B
+        self.cbA = self.pi.callback(PIN_A, pigpio.EITHER_EDGE, self.edge_A)
+        self.cbB = self.pi.callback(PIN_B, pigpio.EITHER_EDGE, self.edge_B)
 
-        self.prev_state = (self.encA.value << 1) | self.encB.value  # inicjalny stan
+        self.timer = self.create_timer(0.0005, self.publish_state)
 
-        self.encA.when_activated = self.update      # callback na oba zbocza
-        self.encA.when_deactivated = self.update
-        self.encB.when_activated = self.update
-        self.encB.when_deactivated = self.update
+    def edge_A(self, gpio, level, tick):
+        b = self.pi.read(PIN_B)
 
-        self.timer = self.create_timer(0.001, self.publish_state)   # ~333 Hz publikacja stanu
+        # klasyczna reguła quadrature
+        if level == b:
+            self.position += 1
+        else:
+            self.position -= 1
 
-        self.lookup = {       # tablica dekodera quadrature
-            0b0001: +1,
-            0b0010: -1,
-            0b0100: -1,
-            0b0111: +1,
-            0b1000: +1,
-            0b1011: -1,
-            0b1101: -1,
-            0b1110: +1,
-        }
+    def edge_B(self, gpio, level, tick):
+        a = self.pi.read(PIN_A)
 
-    def update(self):
-        state = (self.encA.value << 1) | self.encB.value
-        transition = (self.prev_state << 2) | state
-
-        if transition in self.lookup:
-            self.position += self.lookup[transition]
-
-        self.prev_state = state
+        if level != a:
+            self.position += 1
+        else:
+            self.position -= 1
 
     def publish_state(self):
         now = time.monotonic()
@@ -83,6 +81,10 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+
+    node.cbA.cancel()
+    node.cbB.cancel()
+    node.pi.stop()
 
     node.destroy_node()
     rclpy.shutdown()
