@@ -1,90 +1,149 @@
+import math
+import threading
+import pigpio
+
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32MultiArray
-
-import pigpio
-import time
+from std_msgs.msg import Float64MultiArray, Int32
 
 
-PIN_A = 24
-PIN_B = 23
+ENCODER_PIN_A = 24
+
+PPR = 480
+WHEEL_DIAMETER = 0.048
+
+GLITCH_US = 100
+PUBLISH_RATE = 100.0
+VEL_WINDOW = 20   # liczba próbek w moving average
 
 
-class EncoderNode(Node):
+class EncoderOdomNode(Node):
 
     def __init__(self):
-        super().__init__('encoder_node')
+        super().__init__('encoder_odom_node')
 
-        self.publisher_ = self.create_publisher(
-            Int32MultiArray,
-            'encoder_state',
+        self.publisher = self.create_publisher(
+            Float64MultiArray,
+            'wheel_state',
             10
         )
 
+        self.dir_sub = self.create_subscription(
+            Int32,
+            'motor_direction',
+            self.dir_callback,
+            10
+        )
+
+        self.direction = 0
+
         self.pi = pigpio.pi()
         if not self.pi.connected:
-            raise RuntimeError("pigpiod not running")
+            raise RuntimeError("pigpio daemon not running")
 
-        self.pi.set_mode(PIN_A, pigpio.INPUT)
-        self.pi.set_mode(PIN_B, pigpio.INPUT)
-        self.pi.set_pull_up_down(PIN_A, pigpio.PUD_UP)
-        self.pi.set_pull_up_down(PIN_B, pigpio.PUD_UP)
+        self.pi.set_mode(ENCODER_PIN_A, pigpio.INPUT)
+        self.pi.set_pull_up_down(ENCODER_PIN_A, pigpio.PUD_UP)
+        self.pi.set_glitch_filter(ENCODER_PIN_A, GLITCH_US)
 
-        self.position = 0
+        self.lock = threading.Lock()
+        self.position_ticks = 0
 
-        self.prev_position = 0
-        self.prev_time = time.monotonic()
+        self.cb = self.pi.callback(
+            ENCODER_PIN_A,
+            pigpio.FALLING_EDGE,
+            self.encoder_callback
+        )
 
-        # callback osobno dla A i B
-        self.cbA = self.pi.callback(PIN_A, pigpio.EITHER_EDGE, self.edge_A)
-        self.cbB = self.pi.callback(PIN_B, pigpio.EITHER_EDGE, self.edge_B)
+        self.prev_ticks = 0
+        self.prev_time = self.get_clock().now()
 
-        self.timer = self.create_timer(0.0005, self.publish_state)
+        self.timer = self.create_timer(
+            1.0 / PUBLISH_RATE,
+            self.publish_state
+        )
 
-    def edge_A(self, gpio, level, tick):
-        b = self.pi.read(PIN_B)
+        self.ticks_per_rev = PPR
+        self.wheel_circ = math.pi * WHEEL_DIAMETER
 
-        # klasyczna reguła quadrature
-        if level == b:
-            self.position += 1
-        else:
-            self.position -= 1
+        # bufory moving average
+        self.dt_buf = []
+        self.tick_buf = []
 
-    def edge_B(self, gpio, level, tick):
-        a = self.pi.read(PIN_A)
+    def dir_callback(self, msg):
+        self.direction = int(msg.data)
 
-        if level != a:
-            self.position += 1
-        else:
-            self.position -= 1
+    def encoder_callback(self, gpio, level, tick):
+        if self.direction == 0:
+            return
+        with self.lock:
+            self.position_ticks += self.direction
 
     def publish_state(self):
-        now = time.monotonic()
-        dt = now - self.prev_time
 
-        pos = self.position
-        vel = (pos - self.prev_position) / dt
+        now = self.get_clock().now()
 
-        self.prev_position = pos
+        with self.lock:
+            ticks = self.position_ticks
+
+        dt = (now - self.prev_time).nanoseconds * 1e-9
+        if dt <= 0:
+            return
+
+        delta_ticks = ticks - self.prev_ticks
+
+        # aktualizacja buforów moving average
+        self.dt_buf.append(dt)
+        self.tick_buf.append(delta_ticks)
+
+        if len(self.dt_buf) > VEL_WINDOW:
+            self.dt_buf.pop(0)
+            self.tick_buf.pop(0)
+
+        sum_dt = sum(self.dt_buf)
+        sum_ticks = sum(self.tick_buf)
+
+        # pozycja absolutna
+        rev = ticks / self.ticks_per_rev
+        angle = rev * 2.0 * math.pi
+        distance = rev * self.wheel_circ
+
+        # prędkość z moving average
+        if sum_dt > 0:
+            vel_rev = (sum_ticks / self.ticks_per_rev) / sum_dt
+        else:
+            vel_rev = 0.0
+
+        omega = vel_rev * 2.0 * math.pi
+        linear_vel = vel_rev * self.wheel_circ
+
+        msg = Float64MultiArray()
+        msg.data = [
+            float(ticks),
+            angle,
+            distance,
+            omega,
+            linear_vel
+        ]
+
+        self.publisher.publish(msg)
+
+        self.prev_ticks = ticks
         self.prev_time = now
 
-        msg = Int32MultiArray()
-        msg.data = [int(pos), int(vel)]
-        self.publisher_.publish(msg)
+    def destroy_node(self):
+        self.cb.cancel()
+        self.pi.stop()
+        super().destroy_node()
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = EncoderNode()
+    node = EncoderOdomNode()
 
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-
-    node.cbA.cancel()
-    node.cbB.cancel()
-    node.pi.stop()
 
     node.destroy_node()
     rclpy.shutdown()

@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Int32
 import pigpio
 
 
@@ -25,15 +25,19 @@ class MotorNode(Node):
             10
         )
 
+        self.dir_pub = self.create_publisher(
+            Int32,
+            'motor_direction',
+            10
+        )
+
         self.pi = pigpio.pi()
         if not self.pi.connected:
             raise RuntimeError("pigpiod not running")
 
-        # enable mostka
         self.pi.write(PIN_REN, 1)
         self.pi.write(PIN_LEN, 1)
 
-        # konfiguracja PWM
         self.pi.set_PWM_frequency(PIN_RPWM, PWM_FREQ)
         self.pi.set_PWM_frequency(PIN_LPWM, PWM_FREQ)
 
@@ -42,9 +46,15 @@ class MotorNode(Node):
 
         self.stop()
 
+    def publish_dir(self, d):
+        msg = Int32()
+        msg.data = d
+        self.dir_pub.publish(msg)
+
     def stop(self):
         self.pi.set_PWM_dutycycle(PIN_RPWM, 0)
         self.pi.set_PWM_dutycycle(PIN_LPWM, 0)
+        self.publish_dir(0)
 
     def cmd_cb(self, msg):
         u = max(-1.0, min(1.0, msg.data))
@@ -53,10 +63,12 @@ class MotorNode(Node):
         if u > 0:
             self.pi.set_PWM_dutycycle(PIN_LPWM, 0)
             self.pi.set_PWM_dutycycle(PIN_RPWM, duty)
+            self.publish_dir(1)
 
         elif u < 0:
             self.pi.set_PWM_dutycycle(PIN_RPWM, 0)
             self.pi.set_PWM_dutycycle(PIN_LPWM, duty)
+            self.publish_dir(-1)
 
         else:
             self.stop()
