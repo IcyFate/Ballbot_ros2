@@ -29,6 +29,7 @@ setup(
         'encoder_read = ballbot.encoder_read:main',
         'encoder_raw = ballbot.encoder_raw:main',
         'engine_PWM = ballbot.engine_PWM:main',
+        'imu_raw = ballbot.imu_raw:main',
         ],
     },
 )

@@ -6,8 +6,8 @@ import pigpio
 
 PIN_RPWM = 19
 PIN_LPWM = 4
-PIN_REN = 3
-PIN_LEN = 2
+PIN_REN = 27
+PIN_LEN = 17
 
 PWM_FREQ = 20000
 PWM_RANGE = 255
