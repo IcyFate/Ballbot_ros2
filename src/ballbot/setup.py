@@ -30,6 +30,8 @@ setup(
         'encoder_raw = ballbot.encoder_raw:main',
         'engine_PWM = ballbot.engine_PWM:main',
         'imu_raw = ballbot.imu_raw:main',
+        'imu_kalman = ballbot.imu_kalman:main',
+        'imu_kalman_plot = ballbot.imu_kalman_plot:main',
         ],
     },
 )

@@ -34,4 +34,18 @@ def generate_launch_description():
             output='screen'
         ),
 
+        Node(
+            package='ballbot',
+            executable='imu_kalman',
+            name='imu_kalman_node',
+            output='screen'
+        ),
+
+        # Node(
+        #     package='ballbot',
+        #     executable='imu_kalman_plot',
+        #     name='imu_kalman_plot_node',
+        #     output='screen'
+        # ),
+
     ])
