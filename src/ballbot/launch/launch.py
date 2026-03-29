@@ -13,12 +13,12 @@ def generate_launch_description():
             output='screen'
         ),
 
-        Node(
-            package='ballbot',
-            executable='encoder_raw',
-            name='encoder_raw_node',
-            output='screen'
-        ),
+        # Node(
+        #     package='ballbot',
+        #     executable='encoder_raw',
+        #     name='encoder_raw_node',
+        #     output='screen'
+        # ),
 
         Node(
             package='ballbot',
