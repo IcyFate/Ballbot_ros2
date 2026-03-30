@@ -27,12 +27,12 @@ def generate_launch_description():
             output='screen'
         ),
 
-        Node(
-            package='ballbot',
-            executable='imu_raw',
-            name='imu_raw_node',
-            output='screen'
-        ),
+        # Node(
+        #     package='ballbot',
+        #     executable='imu_raw',
+        #     name='imu_raw_node',
+        #     output='screen'
+        # ),
 
         Node(
             package='ballbot',
