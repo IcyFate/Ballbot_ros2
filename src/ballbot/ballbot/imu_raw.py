@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
-import rclpy
-from rclpy.node import Node
-from sensor_msgs.msg import Imu
+import rclpy # type: ignore
+from rclpy.node import Node # type: ignore
+from sensor_msgs.msg import Imu # type: ignore
 
 import board
 import busio

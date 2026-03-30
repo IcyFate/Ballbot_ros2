@@ -2,9 +2,9 @@ import math
 import threading
 import pigpio
 
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import Float64MultiArray, Int32
+import rclpy # type: ignore
+from rclpy.node import Node # type: ignore
+from std_msgs.msg import Float64MultiArray, Int32 # type: ignore
 
 
 ENCODER_PIN_A = 24

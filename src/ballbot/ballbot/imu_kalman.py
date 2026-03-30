@@ -1,7 +1,7 @@
 import numpy as np
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import Float64MultiArray
+import rclpy # type: ignore
+from rclpy.node import Node # type: ignore # type: ignore
+from std_msgs.msg import Float64MultiArray # type: ignore
 
 import board
 import busio
