@@ -1,39 +1,12 @@
-#!/usr/bin/env python3
-
-import struct
-
 import numpy as np
-import rclpy  # type: ignore
-from rclpy.node import Node  # type: ignore
-from std_msgs.msg import Float64MultiArray  # type: ignore
+import rclpy # type: ignore
+from rclpy.node import Node # type: ignore # type: ignore
+from std_msgs.msg import Float64MultiArray # type: ignore
 
 import board
 import busio
 from adafruit_lsm6ds.lsm6dso32 import LSM6DSO32
 from adafruit_lsm6ds import Rate
-
-
-# LSM6DSO32 burst read:
-# 0x22 = OUTX_L_G
-# 0x23 = OUTX_H_G
-# 0x24 = OUTY_L_G
-# 0x25 = OUTY_H_G
-# 0x26 = OUTZ_L_G
-# 0x27 = OUTZ_H_G
-# 0x28 = OUTX_L_A
-# 0x29 = OUTX_H_A
-# 0x2A = OUTY_L_A
-# 0x2B = OUTY_H_A
-# 0x2C = OUTZ_L_A
-# 0x2D = OUTZ_H_A
-BURST_START_REG = 0x22
-BURST_LEN = 12
-
-# Przyjęte domyślne zakresy po resecie:
-# gyro: ±250 dps  -> 8.75 mdps/LSB = 0.00875 dps/LSB
-# acc:  ±8 g      -> 0.244 mg/LSB  = 0.000244 * 9.80665 m/s^2/LSB
-GYRO_LSB_TO_RAD_S = (0.00875 * np.pi / 180.0)
-ACC_LSB_TO_MS2 = (0.244e-3 * 9.80665)
 
 
 class ImuKalmanSmoother:
@@ -89,49 +62,21 @@ class ImuKalmanNode(Node):
 
         self.i2c = busio.I2C(board.SCL, board.SDA)
 
-        # Zostawione tylko do konfiguracji ODR sensora.
         self.imu = LSM6DSO32(self.i2c, address=0x6A)
+
         self.imu.accelerometer_data_rate = Rate.RATE_6_66K_HZ
         self.imu.gyro_data_rate = Rate.RATE_6_66K_HZ
 
         self.filter = ImuKalmanSmoother()
+
         self.last_time = self.get_clock().now()
 
         self.msg = Float64MultiArray()
         self.z = np.zeros(6, dtype=np.float64)
 
-        self.rx = bytearray(BURST_LEN)
-
         self.timer = self.create_timer(1 / 1000, self.loop)
 
         self.get_logger().info("IMU + simplified Kalman initialized")
-
-    def read_burst(self):
-        # Jeden burst read: 12 bajtów od OUTX_L_G do OUTZ_H_A
-        self.i2c.writeto_then_readfrom(
-            0x6A,
-            bytes([BURST_START_REG]),
-            self.rx
-        )
-
-        gx_raw, gy_raw, gz_raw, ax_raw, ay_raw, az_raw = struct.unpack(
-            '<hhhhhh',
-            self.rx
-        )
-
-        gyro = (
-            gx_raw * GYRO_LSB_TO_RAD_S,
-            gy_raw * GYRO_LSB_TO_RAD_S,
-            gz_raw * GYRO_LSB_TO_RAD_S,
-        )
-
-        acc = (
-            ax_raw * ACC_LSB_TO_MS2,
-            ay_raw * ACC_LSB_TO_MS2,
-            az_raw * ACC_LSB_TO_MS2,
-        )
-
-        return acc, gyro
 
     def loop(self):
         now = self.get_clock().now()
@@ -142,7 +87,8 @@ class ImuKalmanNode(Node):
             dt = 0.001
 
         try:
-            acc, gyro = self.read_burst()
+            acc = self.imu.acceleration
+            gyro = self.imu.gyro
         except OSError as e:
             self.get_logger().warning(f"I2C read error: {e}")
             return
@@ -157,6 +103,7 @@ class ImuKalmanNode(Node):
         filtered = self.filter.step(self.z, dt)
 
         stamp_sec = now.nanoseconds * 1e-9
+
         self.msg.data = [stamp_sec] + filtered.tolist()
 
         self.publisher.publish(self.msg)

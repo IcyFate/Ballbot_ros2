@@ -48,4 +48,18 @@ def generate_launch_description():
         #     output='screen'
         # ),
 
+        # Node(
+        #     package='ballbot',
+        #     executable='check_gyro',
+        #     name='check_gyro_node',
+        #     output='screen'
+        # ),
+
+        # Node(
+        #     package='ballbot',
+        #     executable='imu_kalman_lib',
+        #     name='imu_kalman_lib_node',
+        #     output='screen'
+        # ),
+
     ])
