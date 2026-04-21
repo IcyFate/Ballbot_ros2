@@ -4,10 +4,10 @@ from std_msgs.msg import Float32, Int32
 import pigpio
 
 
-PIN_RPWM = 19
-PIN_LPWM = 4
-PIN_REN = 27
-PIN_LEN = 17
+PIN_RPWM = 4                # silnik 1: 10      ?silnik 2: 4     silnik 3: 6
+PIN_LPWM = 17               # silnik 1: 9       silnik 2: 17     silnik 3: 13
+PIN_REN = 8                 # silnik 1: 11      silnik 2: 8     silnik 3: 19
+PIN_LEN = 22                # silnik 1: 5       silnik 2: 22     silnik 3: 26
 
 PWM_FREQ = 20000
 PWM_RANGE = 255
