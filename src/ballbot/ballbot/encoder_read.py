@@ -1,20 +1,27 @@
+#!/usr/bin/env python3
+
 import math
 import threading
+from collections import deque
 import pigpio
 
-import rclpy # type: ignore
-from rclpy.node import Node # type: ignore
-from std_msgs.msg import Float64MultiArray, Int32 # type: ignore
+import rclpy  # type: ignore
+from rclpy.node import Node  # type: ignore
+from std_msgs.msg import Float64MultiArray, Int32  # type: ignore
 
 
-ENCODER_PIN_A = 25          # silnik1: 24   silnik2: 25    silnik3: 23
+ENCODER_PIN_1A = 24          # silnik1: 24   silnik2: 25    silnik3: 23
+ENCODER_PIN_2A = 25
+ENCODER_PIN_3A = 23
 
 PPR = 480
 WHEEL_DIAMETER = 0.048
 
 GLITCH_US = 100
-PUBLISH_RATE = 100.0
+PUBLISH_RATE = 1000.0
 VEL_WINDOW = 20   # liczba próbek w moving average
+
+TWO_PI = 2.0 * math.pi
 
 
 class EncoderOdomNode(Node):
@@ -41,20 +48,36 @@ class EncoderOdomNode(Node):
         if not self.pi.connected:
             raise RuntimeError("pigpio daemon not running")
 
-        self.pi.set_mode(ENCODER_PIN_A, pigpio.INPUT)
-        self.pi.set_pull_up_down(ENCODER_PIN_A, pigpio.PUD_UP)
-        self.pi.set_glitch_filter(ENCODER_PIN_A, GLITCH_US)
+        self.encoder_pins = [ENCODER_PIN_1A, ENCODER_PIN_2A, ENCODER_PIN_3A]
+
+        for pin in self.encoder_pins:
+            self.pi.set_mode(pin, pigpio.INPUT)
+            self.pi.set_pull_up_down(pin, pigpio.PUD_UP)
+            self.pi.set_glitch_filter(pin, GLITCH_US)
 
         self.lock = threading.Lock()
-        self.position_ticks = 0
 
-        self.cb = self.pi.callback(
-            ENCODER_PIN_A,
-            pigpio.FALLING_EDGE,
-            self.encoder_callback
-        )
+        self.position_ticks = [0, 0, 0]
 
-        self.prev_ticks = 0
+        self.cb = [
+            self.pi.callback(
+                self.encoder_pins[0],
+                pigpio.FALLING_EDGE,
+                self.make_encoder_callback(0)
+            ),
+            self.pi.callback(
+                self.encoder_pins[1],
+                pigpio.FALLING_EDGE,
+                self.make_encoder_callback(1)
+            ),
+            self.pi.callback(
+                self.encoder_pins[2],
+                pigpio.FALLING_EDGE,
+                self.make_encoder_callback(2)
+            )
+        ]
+
+        self.prev_ticks = [0, 0, 0]
         self.prev_time = self.get_clock().now()
 
         self.timer = self.create_timer(
@@ -66,72 +89,93 @@ class EncoderOdomNode(Node):
         self.wheel_circ = math.pi * WHEEL_DIAMETER
 
         # bufory moving average
-        self.dt_buf = []
-        self.tick_buf = []
+        self.dt_buf = [deque(maxlen=VEL_WINDOW) for _ in range(3)]
+        self.tick_buf = [deque(maxlen=VEL_WINDOW) for _ in range(3)]
+
+        # sumy ruchome do szybszego liczenia średniej bez sum(dt_buf) za każdym razem
+        self.sum_dt = [0.0, 0.0, 0.0]
+        self.sum_ticks = [0.0, 0.0, 0.0]
+
+        # jedna wiadomość używana wielokrotnie, żeby nie alokować przy każdej publikacji
+        self.msg = Float64MultiArray()
+        self.msg.data = [0.0] * 16  # [t, motor1..., motor2..., motor3...]
 
     def dir_callback(self, msg):
         self.direction = int(msg.data)
 
-    def encoder_callback(self, gpio, level, tick):
-        if self.direction == 0:
-            return
-        with self.lock:
-            self.position_ticks += self.direction
+    def make_encoder_callback(self, motor_idx):
+        def encoder_callback(gpio, level, tick):
+            if self.direction == 0:
+                return
+            with self.lock:
+                self.position_ticks[motor_idx] += self.direction
+        return encoder_callback
 
     def publish_state(self):
 
         now = self.get_clock().now()
 
         with self.lock:
-            ticks = self.position_ticks
+            ticks_1 = self.position_ticks[0]
+            ticks_2 = self.position_ticks[1]
+            ticks_3 = self.position_ticks[2]
 
         dt = (now - self.prev_time).nanoseconds * 1e-9
         if dt <= 0:
             return
 
-        delta_ticks = ticks - self.prev_ticks
+        ticks_list = [ticks_1, ticks_2, ticks_3]
 
         # aktualizacja buforów moving average
-        self.dt_buf.append(dt)
-        self.tick_buf.append(delta_ticks)
+        for i in range(3):
+            delta_ticks = ticks_list[i] - self.prev_ticks[i]
 
-        if len(self.dt_buf) > VEL_WINDOW:
-            self.dt_buf.pop(0)
-            self.tick_buf.pop(0)
+            if len(self.dt_buf[i]) == VEL_WINDOW:
+                self.sum_dt[i] -= self.dt_buf[i][0]
+                self.sum_ticks[i] -= self.tick_buf[i][0]
 
-        sum_dt = sum(self.dt_buf)
-        sum_ticks = sum(self.tick_buf)
+            self.dt_buf[i].append(dt)
+            self.tick_buf[i].append(delta_ticks)
 
-        # pozycja absolutna
-        rev = ticks / self.ticks_per_rev
-        angle = rev * 2.0 * math.pi
-        distance = rev * self.wheel_circ
+            self.sum_dt[i] += dt
+            self.sum_ticks[i] += delta_ticks
 
-        # prędkość z moving average
-        if sum_dt > 0:
-            vel_rev = (sum_ticks / self.ticks_per_rev) / sum_dt
-        else:
-            vel_rev = 0.0
+        # zapis do jednej wiadomości
+        self.msg.data[0] = float(now.nanoseconds * 1e-9)
 
-        omega = vel_rev * 2.0 * math.pi
-        linear_vel = vel_rev * self.wheel_circ
+        for i in range(3):
+            ticks = ticks_list[i]
 
-        msg = Float64MultiArray()
-        msg.data = [
-            float(ticks),
-            angle,
-            distance,
-            omega,
-            linear_vel
-        ]
+            # pozycja absolutna
+            rev = ticks / self.ticks_per_rev
+            angle = rev * TWO_PI
+            distance = rev * self.wheel_circ
 
-        self.publisher.publish(msg)
+            # prędkość z moving average
+            if self.sum_dt[i] > 0:
+                vel_rev = (self.sum_ticks[i] / self.ticks_per_rev) / self.sum_dt[i]
+            else:
+                vel_rev = 0.0
 
-        self.prev_ticks = ticks
+            omega = vel_rev * TWO_PI
+            linear_vel = vel_rev * self.wheel_circ
+
+            base = 1 + i * 5
+            self.msg.data[base + 0] = float(ticks)
+            self.msg.data[base + 1] = angle
+            self.msg.data[base + 2] = distance
+            self.msg.data[base + 3] = omega
+            self.msg.data[base + 4] = linear_vel
+
+            self.prev_ticks[i] = ticks
+
+        self.publisher.publish(self.msg)
+
         self.prev_time = now
 
     def destroy_node(self):
-        self.cb.cancel()
+        for c in self.cb:
+            c.cancel()
         self.pi.stop()
         super().destroy_node()
 
