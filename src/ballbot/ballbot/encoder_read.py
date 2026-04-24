@@ -10,8 +10,8 @@ from rclpy.node import Node  # type: ignore
 from std_msgs.msg import Float64MultiArray, Int32  # type: ignore
 
 
-ENCODER_PIN_1A = 24          # silnik1: 24   silnik2: 25    silnik3: 23
-ENCODER_PIN_2A = 25
+ENCODER_PIN_1A = 25          # silnik1: 25   silnik2: 24    silnik3: 23
+ENCODER_PIN_2A = 24
 ENCODER_PIN_3A = 23
 
 PPR = 480
