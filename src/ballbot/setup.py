@@ -33,7 +33,8 @@ setup(
         'imu_kalman = ballbot.imu_kalman:main',
         'imu_kalman_plot = ballbot.imu_kalman_plot:main',
         'check_gyro = ballbot.check_gyro:main',
-        'imu_kalman_lib = ballbot.imu_kalman_lib:main'
+        'imu_kalman_lib = ballbot.imu_kalman_lib:main',
+        'IMU_to_degrees = ballbot.IMU_to_degrees:main'
         ],
     },
 )
