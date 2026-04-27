@@ -100,9 +100,9 @@ class WheelVelocityMotorNode(Node):
         self.last_direction = [0, 0, 0]               # pamięć kierunku do resetu PI
 
         self.pi_ctrl = [
-            PI(kp=5.0, ki=10.0, i_limit=120.0),       # PI koła 1
-            PI(kp=5.0, ki=10.0, i_limit=120.0),       # PI koła 2
-            PI(kp=5.0, ki=10.0, i_limit=120.0),       # PI koła 3
+            PI(kp=5.0, ki=5.0, i_limit=120.0),       # PI koła 1
+            PI(kp=5.0, ki=5.0, i_limit=120.0),       # PI koła 2
+            PI(kp=5.0, ki=5.0, i_limit=120.0),       # PI koła 3
         ]
 
         self.pi = pigpio.pi()                         # połączenie z daemonem pigpio
