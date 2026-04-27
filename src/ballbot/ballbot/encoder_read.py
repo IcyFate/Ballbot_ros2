@@ -7,11 +7,11 @@ import pigpio
 
 import rclpy  # type: ignore
 from rclpy.node import Node  # type: ignore
-from std_msgs.msg import Float64MultiArray, Int32  # type: ignore
+from std_msgs.msg import Float64, Float64MultiArray, Int32MultiArray  # type: ignore
 
 
-ENCODER_PIN_1A = 25          # silnik1: 25   silnik2: 24    silnik3: 23
-ENCODER_PIN_2A = 24
+ENCODER_PIN_1A = 24          # silnik1: 24   silnik2: 25    silnik3: 23
+ENCODER_PIN_2A = 25
 ENCODER_PIN_3A = 23
 
 PPR = 480
@@ -19,9 +19,10 @@ WHEEL_DIAMETER = 0.048
 
 GLITCH_US = 100
 PUBLISH_RATE = 1000.0
-VEL_WINDOW = 20   # liczba próbek w moving average
+VEL_WINDOW = 100   # liczba próbek w dłuższym oknie
 
 TWO_PI = 2.0 * math.pi
+OMEGA_EMA_ALPHA = 0.8  # filtr dolnoprzepustowy EMA; mniejsze = mocniejsze wygładzenie
 
 
 class EncoderOdomNode(Node):
@@ -35,14 +36,20 @@ class EncoderOdomNode(Node):
             10
         )
 
+        self.speed_pub = self.create_publisher(
+            Float64,
+            'wheel1_speed',
+            10
+        )
+
         self.dir_sub = self.create_subscription(
-            Int32,
+            Int32MultiArray,
             'motor_direction',
             self.dir_callback,
             10
         )
 
-        self.direction = 0
+        self.direction = [0, 0, 0]  # kierunek dla każdego silnika osobno
 
         self.pi = pigpio.pi()
         if not self.pi.connected:
@@ -77,7 +84,6 @@ class EncoderOdomNode(Node):
             )
         ]
 
-        self.prev_ticks = [0, 0, 0]
         self.prev_time = self.get_clock().now()
 
         self.timer = self.create_timer(
@@ -88,60 +94,53 @@ class EncoderOdomNode(Node):
         self.ticks_per_rev = PPR
         self.wheel_circ = math.pi * WHEEL_DIAMETER
 
-        # bufory moving average
-        self.dt_buf = [deque(maxlen=VEL_WINDOW) for _ in range(3)]
+        # bufory dla dłuższego okna czasowego
+        self.time_buf = [deque(maxlen=VEL_WINDOW) for _ in range(3)]
         self.tick_buf = [deque(maxlen=VEL_WINDOW) for _ in range(3)]
-
-        # sumy ruchome do szybszego liczenia średniej bez sum(dt_buf) za każdym razem
-        self.sum_dt = [0.0, 0.0, 0.0]
-        self.sum_ticks = [0.0, 0.0, 0.0]
 
         # jedna wiadomość używana wielokrotnie, żeby nie alokować przy każdej publikacji
         self.msg = Float64MultiArray()
         self.msg.data = [0.0] * 16  # [t, motor1..., motor2..., motor3...]
 
+        # osobny publisher do wykresu prędkości silnika z enkodera na pinie 24
+        self.speed_msg = Float64()
+        self.wheel1_speed_ema = 0.0  # wygładzona prędkość koła 1
+        self.wheel1_ema_initialized = False
+
     def dir_callback(self, msg):
-        self.direction = int(msg.data)
+        # odczyt kierunku dla 3 silników z Int32MultiArray
+        if len(msg.data) >= 3:
+            self.direction[0] = int(msg.data[0])
+            self.direction[1] = int(msg.data[1])
+            self.direction[2] = int(msg.data[2])
 
     def make_encoder_callback(self, motor_idx):
         def encoder_callback(gpio, level, tick):
-            if self.direction == 0:
+            dir_i = self.direction[motor_idx]  # kierunek dla konkretnego silnika
+
+            if dir_i == 0:
                 return
+
             with self.lock:
-                self.position_ticks[motor_idx] += self.direction
+                self.position_ticks[motor_idx] += dir_i  # inkrementacja zgodnie z kierunkiem
         return encoder_callback
 
     def publish_state(self):
 
         now = self.get_clock().now()
+        now_s = now.nanoseconds * 1e-9
 
         with self.lock:
             ticks_1 = self.position_ticks[0]
             ticks_2 = self.position_ticks[1]
             ticks_3 = self.position_ticks[2]
 
-        dt = (now - self.prev_time).nanoseconds * 1e-9
-        if dt <= 0:
-            return
-
         ticks_list = [ticks_1, ticks_2, ticks_3]
 
-        # aktualizacja buforów moving average
-        for i in range(3):
-            delta_ticks = ticks_list[i] - self.prev_ticks[i]
-
-            if len(self.dt_buf[i]) == VEL_WINDOW:
-                self.sum_dt[i] -= self.dt_buf[i][0]
-                self.sum_ticks[i] -= self.tick_buf[i][0]
-
-            self.dt_buf[i].append(dt)
-            self.tick_buf[i].append(delta_ticks)
-
-            self.sum_dt[i] += dt
-            self.sum_ticks[i] += delta_ticks
-
         # zapis do jednej wiadomości
-        self.msg.data[0] = float(now.nanoseconds * 1e-9)
+        self.msg.data[0] = float(now_s)
+
+        wheel1_omega_raw = 0.0
 
         for i in range(3):
             ticks = ticks_list[i]
@@ -151,14 +150,54 @@ class EncoderOdomNode(Node):
             angle = rev * TWO_PI
             distance = rev * self.wheel_circ
 
-            # prędkość z moving average
-            if self.sum_dt[i] > 0:
-                vel_rev = (self.sum_ticks[i] / self.ticks_per_rev) / self.sum_dt[i]
+            # aktualizacja bufora dłuższego okna
+            self.time_buf[i].append(now_s)
+            self.tick_buf[i].append(ticks)
+
+            # prędkość liczona z dłuższego okna:
+            # omega = 2*pi * delta_ticks / (PPR * delta_t)
+            if len(self.time_buf[i]) >= 2:
+                dt_window = self.time_buf[i][-1] - self.time_buf[i][0]
+                delta_ticks = self.tick_buf[i][-1] - self.tick_buf[i][0]
+
+                if dt_window > 0.0:
+                    vel_rev = (delta_ticks / self.ticks_per_rev) / dt_window
+                else:
+                    vel_rev = 0.0
             else:
                 vel_rev = 0.0
 
-            omega = vel_rev * TWO_PI
-            linear_vel = vel_rev * self.wheel_circ
+            omega_raw = vel_rev * TWO_PI
+            linear_vel_raw = vel_rev * self.wheel_circ
+
+            # filtr dolnoprzepustowy EMA na prędkości
+            if i == 0:
+                if not self.wheel1_ema_initialized:
+                    self.wheel1_speed_ema = omega_raw
+                    self.wheel1_ema_initialized = True
+                else:
+                    self.wheel1_speed_ema = (
+                        OMEGA_EMA_ALPHA * omega_raw +
+                        (1.0 - OMEGA_EMA_ALPHA) * self.wheel1_speed_ema
+                    )
+                omega = self.wheel1_speed_ema
+                wheel1_omega_raw = omega_raw
+            else:
+                # osobne wygładzanie dla pozostałych kół bez dodatkowych topiców
+                base_omega_ema_name = f"_omega_ema_{i}"
+                if not hasattr(self, base_omega_ema_name):
+                    setattr(self, base_omega_ema_name, omega_raw)
+                    setattr(self, f"_omega_ema_init_{i}", True)
+                    omega = omega_raw
+                else:
+                    prev_omega = getattr(self, base_omega_ema_name)
+                    omega = (
+                        OMEGA_EMA_ALPHA * omega_raw +
+                        (1.0 - OMEGA_EMA_ALPHA) * prev_omega
+                    )
+                    setattr(self, base_omega_ema_name, omega)
+
+            linear_vel = omega * self.wheel_circ / TWO_PI
 
             base = 1 + i * 5
             self.msg.data[base + 0] = float(ticks)
@@ -167,7 +206,9 @@ class EncoderOdomNode(Node):
             self.msg.data[base + 3] = omega
             self.msg.data[base + 4] = linear_vel
 
-            self.prev_ticks[i] = ticks
+        # wygładzona prędkość koła 1 na wykres
+        self.speed_msg.data = float(self.wheel1_speed_ema)
+        self.speed_pub.publish(self.speed_msg)
 
         self.publisher.publish(self.msg)
 

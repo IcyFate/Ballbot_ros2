@@ -1,215 +1,247 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 
-import math  # funkcje matematyczne: abs, pi, ograniczenia PID
-import rclpy  # type: ignore  # biblioteka ROS 2
-from rclpy.node import Node  # type: ignore  # klasa bazowa dla noda ROS 2
-from std_msgs.msg import Float64MultiArray, Int32MultiArray  # type: ignore  # wiadomości: prędkości i kierunek
-import pigpio  # sterowanie GPIO/PWM na Raspberry Pi
+import math
+import pigpio
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import Float64MultiArray, Int32MultiArray
+
+WHEEL_COUNT = 3                                      # liczba kół
+
+WHEEL_STATE_ANGULAR_VEL_IDXS = [4, 9, 14]            # indeksy omega1..omega3 w wheel_state
+
+PIN_RPWM = [10, 4, 6]
+PIN_LPWM = [9, 17, 13]
+PIN_REN = [11, 8, 19]
+PIN_LEN = [5, 22, 26]
+
+PWM_FREQ = 20000
+PWM_RANGE = 255
+
+OMEGA_MAX = 330.0 * 2.0 * math.pi / 60.0             # max rad/s
+PWM_START_MOVE = 25.0                                # PWM potrzebny do ruszenia
+PWM_MAX = 255.0
+
+REF_DEADBAND_OMEGA = 0.05                            # martwa strefa wokół zera
+DT_MIN = 1e-3
+DT_MAX = 0.05
 
 
-WHEEL_COUNT = 3  # liczba kół / silników w układzie
-
-# Indeksy prędkości kątowych w wiadomości wheel_state:
-# [t, tick1, ang1, dist1, omega1, vel1, tick2, ang2, dist2, omega2, vel2, tick3, ang3, dist3, omega3, vel3]
-WHEEL_STATE_ANGULAR_VEL_IDXS = [4, 9, 14]  # indeksy omega1, omega2, omega3 w tablicy wheel_state
-
-# Piny sterowania silnikami:
-# dla każdego silnika mamy RPWM, LPWM, REN, LEN
-PIN_RPWM = [10, 4, 6]   # silnik 1, 2, 3: PWM dla kierunku dodatniego
-PIN_LPWM = [9, 17, 13]  # silnik 1, 2, 3: PWM dla kierunku ujemnego
-PIN_REN = [11, 8, 19]   # silnik 1, 2, 3: enable prawej gałęzi mostka
-PIN_LEN = [5, 22, 26]   # silnik 1, 2, 3: enable lewej gałęzi mostka
-
-PWM_FREQ = 20000  # częstotliwość PWM
-PWM_RANGE = 255    # zakres PWM zgodny z pigpio
+def clamp(x, lo, hi):
+    return max(lo, min(hi, x))                       # ograniczenie zakresu
 
 
-class PID:
-    def __init__(
-        self,
-        kp: float,  # wzmocnienie proporcjonalne
-        ki: float,  # wzmocnienie całkujące
-        kd: float,  # wzmocnienie różniczkujące
-        output_limit: float = 1.0,  # maksymalna wartość wyjścia PID
-        i_limit: float = 0.5,  # ograniczenie członu całkującego
-    ):
-        self.kp = float(kp)  # zapis Kp jako float
-        self.ki = float(ki)  # zapis Ki jako float
-        self.kd = float(kd)  # zapis Kd jako float
-        self.output_limit = float(output_limit)  # limit wyjścia regulatora
-        self.i_limit = float(i_limit)  # limit całki, żeby nie narastała bez końca
+class PI:
+    def __init__(self, kp, ki, i_limit=120.0):
+        self.kp = float(kp)                          # wzmocnienie P
+        self.ki = float(ki)                          # wzmocnienie I
+        self.i_limit = float(i_limit)                # limit całki
 
-        self.integral = 0.0  # człon całkujący błędu
-        self.prev_error = 0.0  # poprzedni błąd do obliczenia pochodnej
-        self.initialized = False  # flaga pierwszego wywołania regulatora
+        self.integral = 0.0                          # stan całki
+        self.initialized = False                     # flaga pierwszego kroku
 
-    def update(self, setpoint: float, measurement: float, dt: float) -> float:
-        dt = max(float(dt), 1e-6)  # zabezpieczenie przed dzieleniem przez zero
+    def update(self, setpoint, measurement, dt):
+        dt = clamp(float(dt), DT_MIN, DT_MAX)       # stabilny krok czasowy
 
-        error = setpoint - measurement  # błąd regulacji: referencja minus pomiar
+        error = setpoint - measurement               # błąd regulacji e = r - y
+        if not self.initialized:
+            self.initialized = True                  # inicjalizacja regulatora
 
-        if not self.initialized:  # pierwszy krok: nie mamy jeszcze poprzedniego błędu
-            self.prev_error = error  # ustawiamy poprzedni błąd
-            self.initialized = True  # regulator został zainicjalizowany
+        p = self.kp * error                          # człon proporcjonalny
 
-        self.integral += error * dt  # całkowanie błędu w czasie
-        self.integral = max(-self.i_limit, min(self.i_limit, self.integral))  # ograniczenie wind-up
+        i_candidate = self.integral + error * dt     # całkowanie błędu
+        i_candidate = clamp(i_candidate, -self.i_limit, self.i_limit)  # ograniczenie całki
 
-        derivative = (error - self.prev_error) / dt  # pochodna błędu
-        self.prev_error = error  # zapis błędu do następnego kroku
+        u_unsat = p + self.ki * i_candidate          # sygnał przed saturacją
 
-        u = self.kp * error + self.ki * self.integral + self.kd * derivative  # wyjście PID
-        u = max(-self.output_limit, min(self.output_limit, u))  # ograniczenie do zakresu sterowania
-        return u  # sygnał sterujący: dodatni lub ujemny
+        # Anti-windup przez warunkową akceptację całki
+        if u_unsat >= PWM_MAX and error > 0.0:
+            pass                                     # nie zwiększaj całki przy dodatnim nasyceniu
+        elif u_unsat <= 0.0 and error < 0.0:
+            pass                                     # nie zwiększaj całki przy dolnym nasyceniu
+        else:
+            self.integral = i_candidate              # akceptacja całki, gdy nie pogarsza nasycenia
+
+        return p + self.ki * self.integral           # wyjście PI
 
     def reset(self):
-        self.integral = 0.0  # zerowanie całki
-        self.prev_error = 0.0  # zerowanie poprzedniego błędu
-        self.initialized = False  # wymuszenie ponownej inicjalizacji
+        self.integral = 0.0                          # wyzerowanie całki
+        self.initialized = False                     # reset stanu
 
 
 class WheelVelocityMotorNode(Node):
     def __init__(self):
-        super().__init__('wheel_velocity_motor_node')  # nazwa noda ROS 2
+        super().__init__("wheel_velocity_motor_node")  # nazwa noda
 
-        self.ref_sub = self.create_subscription(  # subskrypcja referencji prędkości
-            Float64MultiArray,  # typ wiadomości z referencją dla 3 kół
-            'vel_from_controller',  # topic z prędkościami zadanymi
-            self.ref_callback,  # callback aktualizujący referencje
-            10  # kolejka wiadomości
-        )
+        self.ref_sub = self.create_subscription(
+            Float64MultiArray,
+            "vel_from_controller",
+            self.ref_callback,
+            10,
+        )                                             # referencje prędkości
 
-        self.state_sub = self.create_subscription(  # subskrypcja bieżącego stanu kół
-            Float64MultiArray,  # typ wiadomości wheel_state
-            'wheel_state',  # topic z aktualnymi prędkościami i pozycjami
-            self.state_callback,  # callback wykonujący regulację i sterowanie
-            10  # kolejka wiadomości
-        )
+        self.state_sub = self.create_subscription(
+            Float64MultiArray,
+            "wheel_state",
+            self.state_callback,
+            10,
+        )                                             # stan kół / prędkości
 
-        self.dir_pub = self.create_publisher(  # publisher kierunku obrotu
-            Int32MultiArray,  # tablica kierunków dla 3 silników
-            'wheel_direction',  # topic z kierunkiem obrotu
-            10  # kolejka wiadomości
-        )
+        self.dir_pub = self.create_publisher(
+            Int32MultiArray,
+            "motor_direction",
+            10,
+        )                                             # publikacja kierunku silników
 
-        self.ref_vel = [0.0, 0.0, 0.0]  # referencyjne prędkości kątowe dla 3 kół
-        self.meas_vel = [0.0, 0.0, 0.0]  # zmierzone prędkości kątowe dla 3 kół
+        self.ref_vel = [0.0, 0.0, 0.0]                # zadane prędkości
+        self.meas_vel = [0.0, 0.0, 0.0]               # zmierzone prędkości
+        self.last_time = self.get_clock().now()       # czas poprzedniej iteracji
+        self.last_direction = [0, 0, 0]               # pamięć kierunku do resetu PI
 
-        self.last_time = self.get_clock().now()  # czas ostatniego przeliczenia PID
-
-        self.pid = [  # trzy niezależne regulatory PID, po jednym na każde koło
-            PID(kp=2.0, ki=0.4, kd=0.01, output_limit=1.0, i_limit=0.5),  # PID koła 1
-            PID(kp=2.0, ki=0.4, kd=0.01, output_limit=1.0, i_limit=0.5),  # PID koła 2
-            PID(kp=2.0, ki=0.4, kd=0.01, output_limit=1.0, i_limit=0.5),  # PID koła 3
+        self.pi_ctrl = [
+            PI(kp=5.0, ki=10.0, i_limit=120.0),       # PI koła 1
+            PI(kp=5.0, ki=10.0, i_limit=120.0),       # PI koła 2
+            PI(kp=5.0, ki=10.0, i_limit=120.0),       # PI koła 3
         ]
 
-        self.pi = pigpio.pi()  # połączenie z pigpio daemon
+        self.pi = pigpio.pi()                         # połączenie z daemonem pigpio
         if not self.pi.connected:
-            raise RuntimeError("pigpiod not running")
+            raise RuntimeError("pigpiod not running") # brak daemonu = brak sterowania
 
-        for i in range(WHEEL_COUNT):  # konfiguracja 3 silników
-            self.pi.write(PIN_REN[i], 1)  # aktywacja gałęzi prawej
-            self.pi.write(PIN_LEN[i], 1)  # aktywacja gałęzi lewej
+        for i in range(WHEEL_COUNT):
+            self.pi.write(PIN_REN[i], 1)              # enable prawej gałęzi mostka
+            self.pi.write(PIN_LEN[i], 1)              # enable lewej gałęzi mostka
+            self.pi.set_PWM_frequency(PIN_RPWM[i], PWM_FREQ)  # częstotliwość PWM
+            self.pi.set_PWM_frequency(PIN_LPWM[i], PWM_FREQ)  # częstotliwość PWM
+            self.pi.set_PWM_range(PIN_RPWM[i], PWM_RANGE)     # zakres PWM
+            self.pi.set_PWM_range(PIN_LPWM[i], PWM_RANGE)     # zakres PWM
 
-            self.pi.set_PWM_frequency(PIN_RPWM[i], PWM_FREQ)  # częstotliwość PWM dla RPWM
-            self.pi.set_PWM_frequency(PIN_LPWM[i], PWM_FREQ)  # częstotliwość PWM dla LPWM
+        self.dir_msg = Int32MultiArray()              # wiadomość o kierunku
+        self.dir_msg.data = [0, 0, 0]                 # start od zatrzymania
 
-            self.pi.set_PWM_range(PIN_RPWM[i], PWM_RANGE)  # zakres PWM dla RPWM
-            self.pi.set_PWM_range(PIN_LPWM[i], PWM_RANGE)  # zakres PWM dla LPWM
+        self.log_counter = 0                          # licznik sterowań do logowania
+        self.log_every = 25                           # loguj co 25 iteracji
 
-        self.dir_msg = Int32MultiArray()  # wiadomość publikująca kierunek dla 3 silników
-        self.dir_msg.data = [0, 0, 0]  # startowo zatrzymane
+        self.stop_all()                               # bezpieczny start
+        self.get_logger().info("Wheel velocity PI controller started")
 
-        self.stop_all()  # start od zatrzymania
+    def ref_callback(self, msg):
+        if len(msg.data) < WHEEL_COUNT:
+            return
 
-        self.get_logger().info('Wheel velocity motor controller started')  # komunikat startowy
+        for i in range(WHEEL_COUNT):
+            self.ref_vel[i] = float(msg.data[i])      # zapis zadanej prędkości
 
-    def ref_callback(self, msg: Float64MultiArray):
-        if len(msg.data) < WHEEL_COUNT:  # zabezpieczenie przed zbyt krótką wiadomością
-            return  # ignorujemy błędne dane
+    def speed_to_pwm_ff(self, omega):
+        omega = clamp(abs(omega), 0.0, OMEGA_MAX)     # ograniczenie zakresu
+        if omega == 0.0:
+            return 0.0                                # brak zadania = brak feed-forward
+        return PWM_START_MOVE + (PWM_MAX - PWM_START_MOVE) * (omega / OMEGA_MAX)  # baza PWM
 
-        self.ref_vel[0] = float(msg.data[0])  # referencja prędkości dla koła 1
-        self.ref_vel[1] = float(msg.data[1])  # referencja prędkości dla koła 2
-        self.ref_vel[2] = float(msg.data[2])  # referencja prędkości dla koła 3
+    def apply_motor(self, i, duty, direction):
+        duty = int(clamp(duty, 0.0, PWM_MAX))         # konwersja na dutycycle 0..255
 
-    def apply_motor(self, i: int, pwm_value: float, direction: int):
-        duty = int(max(0.0, min(1.0, float(pwm_value))) * PWM_RANGE)  # PWM w zakresie 0..255
+        if direction > 0:
+            self.pi.set_PWM_dutycycle(PIN_LPWM[i], 0) # wyłączenie przeciwnego kierunku
+            self.pi.set_PWM_dutycycle(PIN_RPWM[i], duty)  # PWM dodatni
+        elif direction < 0:
+            self.pi.set_PWM_dutycycle(PIN_RPWM[i], 0) # wyłączenie przeciwnego kierunku
+            self.pi.set_PWM_dutycycle(PIN_LPWM[i], duty)  # PWM ujemny
+        else:
+            self.pi.set_PWM_dutycycle(PIN_RPWM[i], 0) # oba PWM = 0
+            self.pi.set_PWM_dutycycle(PIN_LPWM[i], 0) # oba PWM = 0
 
-        if direction > 0:  # obrót do przodu
-            self.pi.set_PWM_dutycycle(PIN_LPWM[i], 0)  # wyłącz przeciwny kierunek
-            self.pi.set_PWM_dutycycle(PIN_RPWM[i], duty)  # ustaw PWM dla kierunku dodatniego
-
-        elif direction < 0:  # obrót do tyłu
-            self.pi.set_PWM_dutycycle(PIN_RPWM[i], 0)  # wyłącz przeciwny kierunek
-            self.pi.set_PWM_dutycycle(PIN_LPWM[i], duty)  # ustaw PWM dla kierunku ujemnego
-
-        else:  # stop
-            self.pi.set_PWM_dutycycle(PIN_RPWM[i], 0)  # wyłącz PWM dodatni
-            self.pi.set_PWM_dutycycle(PIN_LPWM[i], 0)  # wyłącz PWM ujemny
+        return duty                                   # zwrot realnie ustawionego PWM
 
     def stop_all(self):
-        for i in range(WHEEL_COUNT):  # zatrzymanie wszystkich silników
-            self.pi.set_PWM_dutycycle(PIN_RPWM[i], 0)  # PWM dodatni = 0
-            self.pi.set_PWM_dutycycle(PIN_LPWM[i], 0)  # PWM ujemny = 0
-            self.dir_msg.data[i] = 0  # kierunek = 0
-        self.dir_pub.publish(self.dir_msg)  # publikacja stanu stop
+        for i in range(WHEEL_COUNT):
+            self.apply_motor(i, 0, 0)                # zatrzymanie silnika
+            self.pi_ctrl[i].reset()                  # reset PI
+            self.last_direction[i] = 0               # reset kierunku
 
-    def state_callback(self, msg: Float64MultiArray):
-        if len(msg.data) < 16:  # wheel_state musi zawierać pełne dane dla 3 kół
-            return  # ignorujemy błędną wiadomość
+        self.dir_msg.data = [0, 0, 0]                # publikacja stop
+        self.dir_pub.publish(self.dir_msg)
 
-        # Bierzemy prędkości kątowe z wheel_state.
-        self.meas_vel[0] = float(msg.data[WHEEL_STATE_ANGULAR_VEL_IDXS[0]])  # omega koła 1
-        self.meas_vel[1] = float(msg.data[WHEEL_STATE_ANGULAR_VEL_IDXS[1]])  # omega koła 2
-        self.meas_vel[2] = float(msg.data[WHEEL_STATE_ANGULAR_VEL_IDXS[2]])  # omega koła 3
+    def state_callback(self, msg):
+        if len(msg.data) < 16:
+            return
 
-        now = self.get_clock().now()  # aktualny czas systemowy ROS
-        dt = (now - self.last_time).nanoseconds * 1e-9  # czas od ostatniej aktualizacji PID
-        self.last_time = now  # zapis czasu do kolejnej iteracji
+        for i in range(WHEEL_COUNT):
+            self.meas_vel[i] = float(msg.data[WHEEL_STATE_ANGULAR_VEL_IDXS[i]])  # pomiar prędkości
 
-        if dt <= 0.0:  # zabezpieczenie gdy czas nie poszedł do przodu
-            dt = 0.001  # minimalny krok czasowy
+        now = self.get_clock().now()                  # aktualny czas
+        dt = (now - self.last_time).nanoseconds * 1e-9  # czas próbkowania
+        self.last_time = now                          # zapis czasu
+        dt = clamp(dt, DT_MIN, DT_MAX)                # bezpieczny zakres dt
 
-        pwm_out = [0.0, 0.0, 0.0]  # wyjściowe wartości PWM dla 3 silników
-        dir_out = [0, 0, 0]  # wyjściowy kierunek: -1, 0, 1 dla 3 silników
+        dir_out = [0, 0, 0]                           # kierunek wyjściowy
+        pwm_out = [0.0, 0.0, 0.0]                     # PWM po regulacji
 
-        for i in range(WHEEL_COUNT):  # osobna regulacja dla każdego koła
-            u = self.pid[i].update(self.ref_vel[i], self.meas_vel[i], dt)  # sygnał PID dla i-tego koła
+        for i in range(WHEEL_COUNT):
+            ref = self.ref_vel[i]                     # zadana prędkość
+            meas = self.meas_vel[i]                   # zmierzona prędkość
 
-            # PWM jako wartość bezwzględna, a kierunek osobno.
-            if abs(u) < 1e-4:  # martwa strefa dla bardzo małych sygnałów
-                dir_out[i] = 0  # brak ruchu
-                pwm_out[i] = 0.0  # brak PWM
-            elif u > 0.0:  # dodatni sygnał -> obrót w przód / zgodny kierunek
-                dir_out[i] = 1  # kierunek dodatni
-                pwm_out[i] = u  # PWM równe wartości sterującej
-            else:  # u < 0, czyli obrót w przeciwną stronę
-                dir_out[i] = -1  # kierunek ujemny
-                pwm_out[i] = -u  # PWM jako wartość dodatnia
+            if abs(ref) < REF_DEADBAND_OMEGA:
+                self.pi_ctrl[i].reset()               # reset PI przy zatrzymaniu
+                self.apply_motor(i, 0, 0)             # pełny stop
+                dir_out[i] = 0
+                pwm_out[i] = 0.0
+                continue
 
-            self.apply_motor(i, pwm_out[i], dir_out[i])  # fizyczne ustawienie PWM na silniku
+            direction = 1 if ref > 0.0 else -1        # kierunek z znaku zadania
 
-        self.dir_msg.data = dir_out  # zapis kierunku dla wszystkich 3 kół do jednej wiadomości
-        self.dir_pub.publish(self.dir_msg)  # publikacja kierunku obrotu
+            if direction != self.last_direction[i] and self.last_direction[i] != 0:
+                self.pi_ctrl[i].reset()               # reset przy zmianie kierunku
+
+            self.last_direction[i] = direction        # zapamiętanie aktualnego kierunku
+
+            ref_abs = abs(ref)                        # regulacja modułu prędkości
+            meas_abs = abs(meas)                      # moduł prędkości z pomiaru
+
+            pwm_ff = self.speed_to_pwm_ff(ref_abs)    # feed-forward z prędkości zadanej
+            pwm_corr = self.pi_ctrl[i].update(ref_abs, meas_abs, dt)  # korekta PI
+
+            duty = pwm_ff + pwm_corr                  # suma sterowania
+            duty = clamp(duty, 0.0, PWM_MAX)          # ograniczenie do fizycznego PWM
+
+            if duty > 0.0:
+                duty = max(PWM_START_MOVE, duty)      # minimum PWM tylko dla ruchu
+
+            pwm_out[i] = duty                         # zapis do logów
+            dir_out[i] = direction                    # zapis kierunku
+            self.apply_motor(i, duty, direction)      # fizyczne ustawienie silnika
+
+        self.dir_msg.data = dir_out                   # publikacja kierunku
+        self.dir_pub.publish(self.dir_msg)
+
+        self.log_counter += 1                         # licznik sterowań
+        if self.log_counter >= self.log_every:
+            self.log_counter = 0
+            self.get_logger().info(
+                f"ref={self.ref_vel}, meas={self.meas_vel}, "
+                f"pwm={['{:.1f}'.format(v) for v in pwm_out]}, "
+                f"dir={dir_out}"
+            )                                         # log co 25 sterowań
 
     def destroy_node(self):
-        self.stop_all()  # zatrzymanie silników przed wyjściem
-        self.pi.stop()  # zamknięcie połączenia z pigpio
+        self.stop_all()                               # bezpieczne wyłączenie silników
+        self.pi.stop()                                # zamknięcie pigpio
         super().destroy_node()
 
 
 def main(args=None):
-    rclpy.init(args=args)  # inicjalizacja ROS 2
-    node = WheelVelocityMotorNode()  # utworzenie jednego noda sterującego prędkością i silnikami
+    rclpy.init(args=args)                             # inicjalizacja ROS 2
+    node = WheelVelocityMotorNode()                   # utworzenie noda
 
     try:
-        rclpy.spin(node)  # główna pętla zdarzeń ROS 2
+        rclpy.spin(node)                              # pętla zdarzeń
     except KeyboardInterrupt:
-        pass  # normalne zakończenie po Ctrl+C
+        pass                                          # normalne przerwanie
     finally:
-        node.destroy_node()  # zwolnienie zasobów noda
-        rclpy.shutdown()  # zamknięcie ROS 2
+        node.destroy_node()                           # sprzątanie zasobów
+        rclpy.shutdown()                              # zamknięcie ROS 2
 
 
-if __name__ == '__main__':
-    main()  # punkt wejścia programu
+if __name__ == "__main__":
+    main()                                            # punkt wejścia

@@ -1,13 +1,13 @@
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32, Int32
+from std_msgs.msg import Float32, Int32MultiArray
 import pigpio
 
 
-PIN_RPWM = 4                # silnik 1: 10      ?silnik 2: 4     silnik 3: 6
-PIN_LPWM = 17               # silnik 1: 9       silnik 2: 17     silnik 3: 13
-PIN_REN = 8                 # silnik 1: 11      silnik 2: 8     silnik 3: 19
-PIN_LEN = 22                # silnik 1: 5       silnik 2: 22     silnik 3: 26
+PIN_RPWM = 10                # silnik 1: 10      ?silnik 2: 4     silnik 3: 6
+PIN_LPWM = 9               # silnik 1: 9       silnik 2: 17     silnik 3: 13
+PIN_REN = 11                 # silnik 1: 11      silnik 2: 8     silnik 3: 19
+PIN_LEN = 5                # silnik 1: 5       silnik 2: 22     silnik 3: 26
 
 PWM_FREQ = 20000
 PWM_RANGE = 255
@@ -26,7 +26,7 @@ class MotorNode(Node):
         )
 
         self.dir_pub = self.create_publisher(
-            Int32,
+            Int32MultiArray,
             'motor_direction',
             10
         )
@@ -47,8 +47,12 @@ class MotorNode(Node):
         self.stop()
 
     def publish_dir(self, d):
-        msg = Int32()
-        msg.data = d
+        msg = Int32MultiArray()
+
+        # MUSI być tablica 3 elementów, bo encoder tego oczekuje
+        # sterujemy tylko silnikiem 1 → reszta = 0
+        msg.data = [int(d), 0, 0]
+
         self.dir_pub.publish(msg)
 
     def stop(self):
