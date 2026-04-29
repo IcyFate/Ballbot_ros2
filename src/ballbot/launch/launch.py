@@ -48,13 +48,19 @@ def generate_launch_description():
             output='screen'
         ),
 
+        # Node(
+        #     package='ballbot',
+        #     executable='motor_PWM_control',
+        #     name='motor_pwm_control_node',
+        #     output='screen'
+        # ),
 
-        Node(
-            package='ballbot',
-            executable='velocity_controller',
-            name='velocity_controller_node',
-            output='screen'
-        ),
+        # Node(
+        #     package='ballbot',
+        #     executable='velocity_controller',
+        #     name='velocity_controller_node',
+        #     output='screen'
+        # ),
 
         # Node(
         #     package='ballbot',
