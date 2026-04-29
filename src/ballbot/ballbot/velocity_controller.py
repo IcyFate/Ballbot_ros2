@@ -20,7 +20,7 @@ PWM_FREQ = 20000
 PWM_RANGE = 255
 
 OMEGA_MAX = 330.0 * 2.0 * math.pi / 60.0             # max rad/s
-PWM_START_MOVE = 25.0                                # PWM potrzebny do ruszenia
+PWM_START_MOVE = 22.0                                # PWM potrzebny do ruszenia
 PWM_MAX = 255.0
 
 REF_DEADBAND_OMEGA = 0.05                            # martwa strefa wokół zera
@@ -100,9 +100,9 @@ class WheelVelocityMotorNode(Node):
         self.last_direction = [0, 0, 0]               # pamięć kierunku do resetu PI
 
         self.pi_ctrl = [
-            PI(kp=10, ki=5, i_limit=120.0),
-            PI(kp=10, ki=5, i_limit=120.0),
-            PI(kp=10, ki=5, i_limit=120.0),
+            PI(kp=3.5, ki=23, i_limit=120.0),
+            PI(kp=3.5, ki=23, i_limit=120.0),
+            PI(kp=3.5, ki=23, i_limit=120.0),
         ]
 
         self.pi = pigpio.pi()
