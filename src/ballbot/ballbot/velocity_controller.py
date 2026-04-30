@@ -120,11 +120,7 @@ class WheelVelocityMotorNode(Node):
         self.dir_msg = Int32MultiArray()
         self.dir_msg.data = [0, 0, 0]
 
-        self.log_counter = 0
-        self.log_every = 25
-
         self.stop_all()
-        self.get_logger().info("Wheel velocity PI controller started")
 
     def ref_callback(self, msg):
         if len(msg.data) < WHEEL_COUNT:
@@ -170,9 +166,6 @@ class WheelVelocityMotorNode(Node):
         dt = clamp(dt, DT_MIN, DT_MAX)
 
         dir_out = [0, 0, 0]
-        pwm_out = [0.0, 0.0, 0.0]
-        err_out = [0.0, 0.0, 0.0]
-        int_out = [0.0, 0.0, 0.0]
 
         for i in range(WHEEL_COUNT):
             ref = self.ref_vel[i]
@@ -182,7 +175,6 @@ class WheelVelocityMotorNode(Node):
                 self.pi_ctrl[i].reset()
                 self.apply_motor(i, 0, 0)
                 dir_out[i] = 0
-                pwm_out[i] = 0.0
                 continue
 
             direction = 1 if ref > 0.0 else -1
@@ -203,26 +195,12 @@ class WheelVelocityMotorNode(Node):
             if duty > 0.0:
                 duty = max(PWM_START_MOVE, duty)
 
-            pwm_out[i] = duty
             dir_out[i] = direction
-            err_out[i] = error
-            int_out[i] = self.pi_ctrl[i].integral
 
             self.apply_motor(i, duty, direction)
 
         self.dir_msg.data = dir_out
         self.dir_pub.publish(self.dir_msg)
-
-        self.log_counter += 1
-        if self.log_counter >= self.log_every:
-            self.log_counter = 0
-            self.get_logger().info(
-                f"ref={self.ref_vel}, meas={self.meas_vel}, "
-                f"err={['{:.2f}'.format(e) for e in err_out]}, "
-                f"I={['{:.2f}'.format(i) for i in int_out]}, "
-                f"u={['{:.1f}'.format(v) for v in pwm_out]}, "
-                f"dir={dir_out}"
-            )
 
     def destroy_node(self):
         self.stop_all()
