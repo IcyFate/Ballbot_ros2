@@ -180,8 +180,8 @@ class ImuKalmanNode(Node):
         roll, pitch, p, q, r, bx, by, bz = self.filter.step(acc, gyro, dt)  # filtr
 
         # kompensacja stałego błędu (offset montażu / bias)
-        roll += 0.0261799388   # +1.5°
-        pitch -= 0.0087266463  # -0.5°
+        roll += 0.0511799388   # +1.5°
+        pitch -= 0.0167266463  # -0.5°
 
         # publikacja minimalna (bez timestampu, bez headerów)
         self.msg.data = [

@@ -14,8 +14,8 @@ r_k = 0.024
 
 K1 = -50.0
 K2 = -25.0
-K3 = 0       # 1.5
-K4 = 0       # 3.5
+K3 = 0
+K4 = 0
 
 # SILNIKI
 
@@ -24,11 +24,10 @@ MIN_COMMAND_RAD = 2.2
 # GEOMETRIA
 
 SQRT3_2 = 0.86602540378
-
 SQRT2_2 = 0.70710678
 
-MAX_ACC = 3
-MAX_VEL = 1
+MAX_ACC = 7
+MAX_VEL = 3
 
 VEL_DAMPING = 5.0
 
@@ -37,7 +36,7 @@ RATE_DEADBAND = 0.015
 
 VEL_FILTER = 0.97
 
-MIN_COMMAND_RAD = 2.2
+MIN_COMMAND_RAD = 4
 
 # NODE
 
@@ -141,11 +140,17 @@ class LqrBalanceController(Node):
 
         ay = -(K1 * theta_y + K2 * theta_dot_y + K3 * self.pos_y + K4 * self.vel_y) - VEL_DAMPING * self.vel_y
 
-        # LIMIT ACC
+        # LIMIT ACC NA NORMĘ WEKTORA
 
-        ax = self.clamp(ax, -MAX_ACC, MAX_ACC)
-        ay = self.clamp(ay, -MAX_ACC, MAX_ACC)
-        
+        acc_norm = math.sqrt(ax * ax + ay * ay)
+
+        if acc_norm > MAX_ACC:
+
+            scale = MAX_ACC / acc_norm
+
+            ax *= scale
+            ay *= scale
+
         # CAŁKOWANIE
 
         self.vel_x += ax * dt
@@ -158,14 +163,19 @@ class LqrBalanceController(Node):
 
         # LIMIT VEL
 
-        self.vel_x = self.clamp(self.vel_x, -MAX_VEL, MAX_VEL)
-        self.vel_y = self.clamp(self.vel_y, -MAX_VEL, MAX_VEL)
+        vel_norm = math.sqrt(self.vel_x * self.vel_x + self.vel_y * self.vel_y)
+
+        if vel_norm > MAX_VEL:
+
+            scale = MAX_VEL / vel_norm
+
+            self.vel_x *= scale
+            self.vel_y *= scale
 
         # POZYCJA
 
         self.pos_x += self.vel_x * dt
         self.pos_y += self.vel_y * dt
-
 
         # MAPOWANIE KOŁA
 
@@ -215,14 +225,13 @@ class LqrBalanceController(Node):
                 f'vy_r={vy_r:.4f} '
                 f'ax={ax:.4f} '
                 f'ay={ay:.4f} '
+                f'acc_norm={acc_norm:.4f} '
                 f'w1={w1:.2f} '
                 f'w2={w2:.2f} '
                 f'w3={w3:.2f}'
             )
 
-# =========================
 # MAIN
-# =========================
 
 def main(args=None):
 
