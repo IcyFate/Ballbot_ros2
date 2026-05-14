@@ -12,29 +12,25 @@ r_k = 0.024
 
 # LQR
 
-K1 = -35.0
-K2 = -10
-K3 = 3
-K4 = 5
+K1 = -5.0
+K2 = -1
+K3 = 0
+K4 = 0
 
 # SILNIKI
 
-MIN_COMMAND_RAD = 2.2
+MIN_COMMAND_RAD = 0
 
 # GEOMETRIA
 
 SQRT3_2 = 0.86602540378
 SQRT2_2 = 0.70710678
 
-MAX_ACC = 10
+MAX_ACC = 7
 MAX_VEL = 1
-
-VEL_DAMPING = 0.0
 
 ANGLE_DEADBAND = 0.005
 RATE_DEADBAND = 0.01
-
-VEL_FILTER = 0.94
 
 # NODE
 
@@ -55,6 +51,12 @@ class LqrBalanceController(Node):
         self.vel_x = 0.0
         self.vel_y = 0.0
 
+        self.pos_x_meas = 0.0
+        self.pos_y_meas = 0.0
+
+        self.vel_x_meas = 0.0
+        self.vel_y_meas = 0.0
+
         self.last_time = self.get_clock().now()
 
         self.log_counter = 0
@@ -63,6 +65,13 @@ class LqrBalanceController(Node):
             Float64MultiArray,
             '/imu/kalman_state',
             self.imu_callback,
+            1
+        )
+
+        self.create_subscription(
+            Float64MultiArray,
+            'wheel_state',
+            self.wheel_callback,
             1
         )
 
@@ -93,6 +102,41 @@ class LqrBalanceController(Node):
         self.roll_rate = d[2]
         self.pitch_rate = d[3]
 
+    def wheel_callback(self, msg):
+
+        d = msg.data
+
+        if len(d) < 16:
+            return
+
+        # pozycje kół z enkoderów
+        d1 = float(d[3])
+        d2 = float(d[8])
+        d3 = float(d[13])
+
+        # prędkości liniowe kół z enkoderów
+        v1 = float(d[5])
+        v2 = float(d[10])
+        v3 = float(d[15])
+
+        c = SQRT2_2
+
+        # pozycja platformy w układzie robota
+        vy_r_pos = -d1 / c
+        vx_r_pos = (d3 - d2) / (2.0 * SQRT3_2 * c)
+
+        # pozycja platformy w układzie globalnym używanym w regulatorze
+        self.pos_x_meas = c * vx_r_pos + c * vy_r_pos
+        self.pos_y_meas = -c * vx_r_pos + c * vy_r_pos
+
+        # prędkość platformy w układzie robota
+        vy_r_vel = -v1 / c
+        vx_r_vel = (v3 - v2) / (2.0 * SQRT3_2 * c)
+
+        # prędkość platformy w układzie globalnym używanym w regulatorze
+        self.vel_x_meas = c * vx_r_vel + c * vy_r_vel
+        self.vel_y_meas = -c * vx_r_vel + c * vy_r_vel
+
     def clamp(self, x, lo, hi):
         return max(lo, min(hi, x))
 
@@ -106,7 +150,7 @@ class LqrBalanceController(Node):
     def min_command_filter(self, x):
 
         if abs(x) < MIN_COMMAND_RAD:
-            return 0
+            return 0.0
 
         return x
 
@@ -132,11 +176,18 @@ class LqrBalanceController(Node):
         theta_dot_x = self.deadband(self.pitch_rate, RATE_DEADBAND)
         theta_dot_y = self.deadband(self.roll_rate, RATE_DEADBAND)
 
+        # STAN Z ENKODERÓW
+
+        self.pos_x = self.pos_x_meas
+        self.pos_y = self.pos_y_meas
+
+        self.vel_x = self.vel_x_meas
+        self.vel_y = self.vel_y_meas
+
         # LQR
 
-        ax = -(K1 * theta_x + K2 * theta_dot_x + K3 * self.pos_x + K4 * self.vel_x) - VEL_DAMPING * self.vel_x
-
-        ay = -(K1 * theta_y + K2 * theta_dot_y + K3 * self.pos_y + K4 * self.vel_y) - VEL_DAMPING * self.vel_y
+        ax = -(K1 * theta_x + K2 * theta_dot_x + K3 * self.pos_x + K4 * self.vel_x)
+        ay = -(K1 * theta_y + K2 * theta_dot_y + K3 * self.pos_y + K4 * self.vel_y)
 
         # LIMIT ACC NA NORMĘ WEKTORA
 
@@ -149,31 +200,11 @@ class LqrBalanceController(Node):
             ax *= scale
             ay *= scale
 
-        # CAŁKOWANIE
+        # BEZ CAŁKOWANIA PRĘDKOŚCI
+        # u traktowane jako bezpośredni sygnał zadany
 
-        self.vel_x += ax * dt
-        self.vel_y += ay * dt
-
-        # LOW PASS VELOCITY
-
-        self.vel_x *= VEL_FILTER
-        self.vel_y *= VEL_FILTER
-
-        # LIMIT VEL
-
-        vel_norm = math.sqrt(self.vel_x * self.vel_x + self.vel_y * self.vel_y)
-
-        if vel_norm > MAX_VEL:
-
-            scale = MAX_VEL / vel_norm
-
-            self.vel_x *= scale
-            self.vel_y *= scale
-
-        # POZYCJA
-
-        self.pos_x += self.vel_x * dt
-        self.pos_y += self.vel_y * dt
+        self.vel_x = self.clamp(ax, -MAX_VEL, MAX_VEL)
+        self.vel_y = self.clamp(ay, -MAX_VEL, MAX_VEL)
 
         # MAPOWANIE KOŁA
 
@@ -181,9 +212,7 @@ class LqrBalanceController(Node):
         vy_r = 0.70710678 * self.vel_x + 0.70710678 * self.vel_y
 
         V1 = -vy_r * math.cos(math.pi / 4)
-
         V2 = (-SQRT3_2 * vx_r + 0.5 * vy_r) * math.cos(math.pi / 4)
-        
         V3 = (SQRT3_2 * vx_r + 0.5 * vy_r) * math.cos(math.pi / 4)
 
         # m/s -> rad/s
@@ -217,8 +246,12 @@ class LqrBalanceController(Node):
             self.get_logger().info(
                 f'pitch={self.pitch:.4f} '
                 f'roll={self.roll:.4f} '
+                f'px={self.pos_x:.4f} '
+                f'py={self.pos_y:.4f} '
                 f'vx={self.vel_x:.4f} '
                 f'vy={self.vel_y:.4f} '
+                f'vx_meas={self.vel_x_meas:.4f} '
+                f'vy_meas={self.vel_y_meas:.4f} '
                 f'vx_r={vx_r:.4f} '
                 f'vy_r={vy_r:.4f} '
                 f'ax={ax:.4f} '
