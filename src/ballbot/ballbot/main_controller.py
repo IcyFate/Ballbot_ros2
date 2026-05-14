@@ -12,10 +12,10 @@ r_k = 0.024
 
 # LQR
 
-K1 = -50.0
-K2 = -25.0
-K3 = 0
-K4 = 0
+K1 = -35.0
+K2 = -10
+K3 = 3
+K4 = 5
 
 # SILNIKI
 
@@ -26,17 +26,15 @@ MIN_COMMAND_RAD = 2.2
 SQRT3_2 = 0.86602540378
 SQRT2_2 = 0.70710678
 
-MAX_ACC = 7
-MAX_VEL = 3
+MAX_ACC = 10
+MAX_VEL = 1
 
-VEL_DAMPING = 5.0
+VEL_DAMPING = 0.0
 
-ANGLE_DEADBAND = 0.01
-RATE_DEADBAND = 0.015
+ANGLE_DEADBAND = 0.005
+RATE_DEADBAND = 0.01
 
-VEL_FILTER = 0.97
-
-MIN_COMMAND_RAD = 4
+VEL_FILTER = 0.94
 
 # NODE
 
@@ -108,7 +106,7 @@ class LqrBalanceController(Node):
     def min_command_filter(self, x):
 
         if abs(x) < MIN_COMMAND_RAD:
-            return 0.0
+            return 0
 
         return x
 
@@ -184,9 +182,9 @@ class LqrBalanceController(Node):
 
         V1 = -vy_r * math.cos(math.pi / 4)
 
-        V2 = (0.5 * vx_r - SQRT3_2 * vy_r) * math.cos(math.pi / 4)
-
-        V3 = (0.5 * vx_r + SQRT3_2 * vy_r) * math.cos(math.pi / 4)
+        V2 = (-SQRT3_2 * vx_r + 0.5 * vy_r) * math.cos(math.pi / 4)
+        
+        V3 = (SQRT3_2 * vx_r + 0.5 * vy_r) * math.cos(math.pi / 4)
 
         # m/s -> rad/s
 
@@ -203,7 +201,7 @@ class LqrBalanceController(Node):
         # PUB
 
         self.msg.data[0] = float(-w3)
-        self.msg.data[1] = float(w2)
+        self.msg.data[1] = float(-w2)
         self.msg.data[2] = float(-w1)
 
         self.pub.publish(self.msg)
