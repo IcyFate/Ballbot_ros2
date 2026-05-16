@@ -17,10 +17,10 @@ r_k = 0.024
 
 # LQR
 
-K1 = -15
-K2 = -3
-K3 = 2
-K4 = 5
+K1 = -50
+K2 = -25
+K3 = 0.5
+K4 = 1
 
 K1_STEP = 1.0
 K2_STEP = 1.0
@@ -36,7 +36,7 @@ VEL_SIGN_Y = -1.0
 
 # SILNIKI
 
-MIN_COMMAND_RAD = 0
+MIN_COMMAND_RAD = 2.2
 
 # GEOMETRIA
 
@@ -346,28 +346,28 @@ class LqrBalanceController(Node):
 
         self.pub.publish(self.msg)
 
-        self.log_counter += 1
+        # self.log_counter += 1
 
-        if self.log_counter >= 100:
-            self.log_counter = 0
+        # if self.log_counter >= 100:
+        #     self.log_counter = 0
 
-            self.get_logger().info(
-                f'K1={self.k1:.2f} '
-                f'K2={self.k2:.2f} '
-                f'K3={self.k3:.2f} '
-                f'K4={self.k4:.2f} '
-                f'pitch={self.pitch:.4f} '
-                f'roll={self.roll:.4f} '
-                f'px_used={self.pos_x:.4f} '
-                f'py_used={self.pos_y:.4f} '
-                f'vx_meas={self.vel_x_meas:.4f} '
-                f'vy_meas={self.vel_y_meas:.4f} '
-                f'ax={ax:.4f} '
-                f'ay={ay:.4f} '
-                f'w1={w1:.2f} '
-                f'w2={w2:.2f} '
-                f'w3={w3:.2f}'
-            )
+        #     self.get_logger().info(
+        #         f'K1={self.k1:.2f} '
+        #         f'K2={self.k2:.2f} '
+        #         f'K3={self.k3:.2f} '
+        #         f'K4={self.k4:.2f} '
+        #         f'pitch={self.pitch:.4f} '
+        #         f'roll={self.roll:.4f} '
+        #         f'px_used={self.pos_x:.4f} '
+        #         f'py_used={self.pos_y:.4f} '
+        #         f'vx_meas={self.vel_x_meas:.4f} '
+        #         f'vy_meas={self.vel_y_meas:.4f} '
+        #         f'ax={ax:.4f} '
+        #         f'ay={ay:.4f} '
+        #         f'w1={w1:.2f} '
+        #         f'w2={w2:.2f} '
+        #         f'w3={w3:.2f}'
+        #     )
 
     def stop_keyboard(self):
         self._keyboard_stop.set()

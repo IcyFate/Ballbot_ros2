@@ -2,12 +2,11 @@
 
 import math
 import struct
+import time
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
-
-# from geometry_msgs.msg import Vector3Stamped  # WYŁĄCZONE – dodatkowy narzut CPU
 
 import board
 import busio
@@ -15,103 +14,89 @@ from adafruit_lsm6ds.lsm6dso32 import LSM6DSO32
 from adafruit_lsm6ds import Rate
 
 
-BURST_START_REG = 0x22  # adres pierwszego rejestru danych IMU (gyro X LSB)
-BURST_LEN = 12          # liczba bajtów: gx,gy,gz,ax,ay,az (6 * int16)
+BURST_START_REG = 0x22
+BURST_LEN = 12
+BURST_CMD = bytes([BURST_START_REG])
+BURST_STRUCT = struct.Struct('<hhhhhh')
 
-GYRO_LSB_TO_RAD_S = (0.00875 * math.pi / 180.0)  # przelicznik z LSB -> rad/s (±250 dps)
-ACC_LSB_TO_MS2 = (0.244e-3 * 9.80665)            # przelicznik z LSB -> m/s^2 (±8g)
+GYRO_LSB_TO_RAD_S = 0.00875 * math.pi / 180.0
+ACC_LSB_TO_MS2 = 0.244e-3 * 9.80665
 
+ROLL_OFFSET = 0.0261799388
+PITCH_OFFSET = -0.0087266463
 
-def wrap_angle(a: float) -> float:
-    return math.atan2(math.sin(a), math.cos(a))  # stabilne zawijanie kąta do [-pi, pi]
+PI = math.pi
+TWO_PI = 2.0 * math.pi
+ACC_K = 0.15
 
 
 class TiltEkf:
+    __slots__ = (
+        'roll',
+        'pitch',
+        'bx',
+        'by',
+        'bz',
+        'initialized',
+    )
+
     def __init__(self):
-        # wektor stanu: [roll, pitch, bx, by, bz]
         self.roll = 0.0
         self.pitch = 0.0
+
         self.bx = 0.0
         self.by = 0.0
         self.bz = 0.0
 
-        # uproszczona "kowariancja" – tylko skalary zamiast macierzy 5x5
-        self.P = 100.0  # macierz kowariancji (5x5), duża niepewność początkowa
-        self.I = 1.0    # macierz jednostkowa (do aktualizacji P)
+        self.initialized = False
 
-        self.q_angle = 0.002   # szum procesu dla kątów (jak szybko mogą się zmieniać)
-        self.q_bias = 5e-5     # szum procesu dla biasów (wolny dryft)
-
-        self.R = 1.5e-6  # szum pomiaru (roll, pitch z akcelerometru)
-
-        self.initialized = False  # flaga inicjalizacji filtru
-
-    def initialize_from_acc(self, acc):
-        ax, ay, az = acc  # przyspieszenia w osiach IMU
-
-        self.roll = math.atan2(ay, az)  # roll z grawitacji
-        self.pitch = math.atan2(-ax, math.sqrt(ay * ay + az * az))  # pitch z grawitacji
-
-        self.bx = 0.0  # biasy gyro ustawione na 0
-        self.by = 0.0
-        self.bz = 0.0
-
-        self.initialized = True  # filtr gotowy do pracy
-
-    def predict(self, gyro, dt):
-        gx, gy, gz = gyro  # pomiar żyroskopu [rad/s]
-
-        phi = self.roll     # roll
-        theta = self.pitch  # pitch
-
-        # prędkości kątowe po korekcji biasu
-        p = gx - self.bx  # prędkość kątowa wokół X (skorygowana o bias)
-        q = gy - self.by  # prędkość wokół Y
-        r = gz - self.bz  # prędkość wokół Z
-
-        sphi = math.sin(phi)   # sin(roll)
-        cphi = math.cos(phi)   # cos(roll)
-        tth = math.tan(theta)  # tan(pitch)
-
-        # równania kinematyki Eulera (nieliniowe)
-        phi_dot = p + sphi * tth * q + cphi * tth * r     # pochodna roll
-        theta_dot = cphi * q - sphi * r                   # pochodna pitch
-
-        self.roll += dt * phi_dot   # integracja roll
-        self.pitch += dt * theta_dot # integracja pitch
-
-        # uproszczony model niepewności (bez Jacobianu)
-        self.P += (self.q_angle * dt)  # zwiększenie niepewności
-
-    def update_from_acc(self, acc):
-        ax, ay, az = acc  # przyspieszenia
-
-        roll_acc = math.atan2(ay, az)  # pomiar roll z akcelerometru
-        pitch_acc = math.atan2(-ax, math.sqrt(ay * ay + az * az))  # pomiar pitch
-
-        y0 = wrap_angle(roll_acc - self.roll)  # błąd pomiaru roll
-        y1 = pitch_acc - self.pitch            # błąd pomiaru pitch
-
-        k = 0.15  # stałe wzmocnienie (zamiast pełnego Kalmana – szybciej)
-
-        self.roll += k * y0  # korekta roll
-        self.pitch += k * y1  # korekta pitch
-
-    def step(self, acc, gyro, dt):
+    def step(self, ax, ay, az, gx, gy, gz, dt):
         if not self.initialized:
-            self.initialize_from_acc(acc)  # inicjalizacja z grawitacji
+            self.roll = math.atan2(ay, az)
+            self.pitch = math.atan2(-ax, math.sqrt(ay * ay + az * az))
 
-        self.predict(gyro, dt)        # predykcja z gyro
-        self.update_from_acc(acc)     # korekta z akcelerometru
+            self.bx = 0.0
+            self.by = 0.0
+            self.bz = 0.0
 
-        gx, gy, gz = gyro
+            self.initialized = True
 
-        # prędkości kątowe po korekcji biasu
-        p = gx - self.bx  # prędkość kątowa X (po korekcji)
-        q = gy - self.by
-        r = gz - self.bz
+        bx = self.bx
+        by = self.by
+        bz = self.bz
 
-        return self.roll, self.pitch, p, q, r, self.bx, self.by, self.bz  # zwracamy cały stan
+        p = gx - bx
+        q = gy - by
+        r = gz - bz
+
+        roll = self.roll
+        pitch = self.pitch
+
+        sphi = math.sin(roll)
+        cphi = math.cos(roll)
+        tth = math.tan(pitch)
+
+        roll += dt * (p + sphi * tth * q + cphi * tth * r)
+        pitch += dt * (cphi * q - sphi * r)
+
+        roll_acc = math.atan2(ay, az)
+        pitch_acc = math.atan2(-ax, math.sqrt(ay * ay + az * az))
+
+        y0 = roll_acc - roll
+        if y0 > PI:
+            y0 -= TWO_PI
+        elif y0 < -PI:
+            y0 += TWO_PI
+
+        y1 = pitch_acc - pitch
+
+        roll += ACC_K * y0
+        pitch += ACC_K * y1
+
+        self.roll = roll
+        self.pitch = pitch
+
+        return roll, pitch, p, q, r, bx, by, bz
 
 
 class ImuKalmanNode(Node):
@@ -121,82 +106,86 @@ class ImuKalmanNode(Node):
         self.publisher = self.create_publisher(
             Float64MultiArray,
             '/imu/kalman_state',
-            10
-        )  # jedyny publisher – minimalny narzut
-
-        self.i2c = busio.I2C(board.SCL, board.SDA)  # magistrala I2C
-
-        self.imu = LSM6DSO32(self.i2c, address=0x6A)  # inicjalizacja sensora
-
-        self.imu.accelerometer_data_rate = Rate.RATE_208_HZ  # niższy ODR = mniej szumu
-        self.imu.gyro_data_rate = Rate.RATE_208_HZ
-
-        self.filter = TiltEkf()  # instancja filtru
-
-        self.last_time = self.get_clock().now()  # czas poprzedniej iteracji
-
-        self.rx = bytearray(BURST_LEN)  # bufor na dane z I2C
-
-        self.msg = Float64MultiArray()  # wiadomość publikowana
-
-        self.timer = self.create_timer(0.001, self.loop)  # 1 kHz pętla
-
-    def read_burst(self):
-        self.i2c.writeto_then_readfrom(
-            0x6A,
-            bytes([BURST_START_REG]),
-            self.rx
-        )  # szybki odczyt 12 bajtów jednym transferem
-
-        gx_raw, gy_raw, gz_raw, ax_raw, ay_raw, az_raw = struct.unpack('<hhhhhh', self.rx)  # unpack int16
-
-        return (
-            (
-                ax_raw * ACC_LSB_TO_MS2,  # ax w m/s^2
-                ay_raw * ACC_LSB_TO_MS2,
-                az_raw * ACC_LSB_TO_MS2,
-            ),
-            (
-                gx_raw * GYRO_LSB_TO_RAD_S,  # gx w rad/s
-                gy_raw * GYRO_LSB_TO_RAD_S,
-                gz_raw * GYRO_LSB_TO_RAD_S,
-            )
+            1
         )
 
-    def loop(self):
-        now = self.get_clock().now()  # aktualny czas
+        self.i2c = busio.I2C(board.SCL, board.SDA)
+        self.imu = LSM6DSO32(self.i2c, address=0x6A)
 
-        dt = (now - self.last_time).nanoseconds * 1e-9  # delta czasu w sekundach
+        self.imu.accelerometer_data_rate = Rate.RATE_208_HZ
+        self.imu.gyro_data_rate = Rate.RATE_208_HZ
+
+        self.filter = TiltEkf()
+
+        self.last_time = time.perf_counter()
+
+        self.rx = bytearray(BURST_LEN)
+
+        self.msg = Float64MultiArray()
+        self.msg.data = [0.0] * 8
+
+        self.i2c_read = self.i2c.writeto_then_readfrom
+        self.publish = self.publisher.publish
+
+    def loop_once(self):
+        now = time.perf_counter()
+        dt = now - self.last_time
         self.last_time = now
 
         if dt <= 0.0:
-            dt = 0.001  # fallback
+            dt = 0.001
 
         try:
-            acc, gyro = self.read_burst()  # odczyt IMU
+            self.i2c_read(
+                0x6A,
+                BURST_CMD,
+                self.rx
+            )
         except OSError:
-            return  # brak logowania = szybciej
+            return
 
-        roll, pitch, p, q, r, bx, by, bz = self.filter.step(acc, gyro, dt)  # filtr
+        gx_raw, gy_raw, gz_raw, ax_raw, ay_raw, az_raw = BURST_STRUCT.unpack(self.rx)
 
-        # kompensacja stałego błędu (offset montażu / bias)
-        roll += 0.0261799388   # +1.5°
-        pitch -= 0.0087266463  # -0.5°
+        ax = ax_raw * ACC_LSB_TO_MS2
+        ay = ay_raw * ACC_LSB_TO_MS2
+        az = az_raw * ACC_LSB_TO_MS2
 
-        # publikacja minimalna (bez timestampu, bez headerów)
-        self.msg.data = [
-            roll, pitch, p, q, r, bx, by, bz
-        ]
+        gx = gx_raw * GYRO_LSB_TO_RAD_S
+        gy = gy_raw * GYRO_LSB_TO_RAD_S
+        gz = gz_raw * GYRO_LSB_TO_RAD_S
 
-        self.publisher.publish(self.msg)  # główny bottleneck – ROS publish
+        roll, pitch, p, q, r, bx, by, bz = self.filter.step(
+            ax,
+            ay,
+            az,
+            gx,
+            gy,
+            gz,
+            dt
+        )
+
+        data = self.msg.data
+
+        data[0] = roll + ROLL_OFFSET
+        data[1] = pitch + PITCH_OFFSET
+        data[2] = p
+        data[3] = q
+        data[4] = r
+        data[5] = bx
+        data[6] = by
+        data[7] = bz
+
+        self.publish(self.msg)
 
 
 def main():
     rclpy.init()
+
     node = ImuKalmanNode()
 
     try:
-        rclpy.spin(node)  # główna pętla ROS
+        while rclpy.ok():
+            node.loop_once()
     except KeyboardInterrupt:
         pass
     finally:
