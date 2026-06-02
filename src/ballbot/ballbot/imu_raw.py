@@ -15,7 +15,7 @@ class ImuNode(Node):
         super().__init__('imu_node')
 
         # publisher
-        self.publisher = self.create_publisher(Imu, 'imu/data_raw', 10)
+        self.publisher = self.create_publisher(Imu, 'imu/data_raw', 1)
 
         # jawna inicjalizacja I2C (ważne)
         self.i2c = busio.I2C(board.SCL, board.SDA)
@@ -23,8 +23,8 @@ class ImuNode(Node):
         # inicjalizacja IMU
         self.imu = LSM6DSO32(self.i2c, address=0x6A)
 
-        self.imu.accelerometer_data_rate = Rate.RATE_6_66K_HZ
-        self.imu.gyro_data_rate = Rate.RATE_6_66K_HZ
+        self.imu.accelerometer_data_rate = Rate.RATE_208_HZ
+        self.imu.gyro_data_rate = Rate.RATE_208_HZ
 
         self.get_logger().info("IMU initialized")
 

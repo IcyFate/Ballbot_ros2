@@ -44,11 +44,11 @@ class EncoderOdomNode(Node):
     def __init__(self):
         super().__init__('encoder_odom_node')
 
-        self.publisher = self.create_publisher(Float64MultiArray, 'wheel_state', 10)
-        self.speed_pub = self.create_publisher(Float64, 'wheel1_speed', 10)
+        self.publisher = self.create_publisher(Float64MultiArray, 'wheel_state', 1)
+        self.speed_pub = self.create_publisher(Float64, 'wheel1_speed', 1)
 
         self.dir_sub = self.create_subscription(
-            Int32MultiArray, 'motor_direction', self.dir_callback, 10
+            Int32MultiArray, 'motor_direction', self.dir_callback, 1
         )
 
         self.direction = [0, 0, 0]

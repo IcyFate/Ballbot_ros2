@@ -62,14 +62,20 @@ def generate_launch_description():
             output='screen'
         ),
 
+        # Node(
+        #     package='ballbot',
+        #     executable='main_controller',
+        #     name='main_controller_node',
+        #     output='screen'
+        # ),
+
         Node(
             package='ballbot',
-            executable='main_controller',
-            name='main_controller_node',
+            executable='main_controller_PID',
+            name='main_controller_PID_node',
             output='screen'
         ),
 
-        
         # Node(
         #     package='ballbot',
         #     executable='imu_kalman_plot',

@@ -37,7 +37,8 @@ setup(
         'IMU_to_degrees = ballbot.IMU_to_degrees:main',
         'velocity_controller = ballbot.velocity_controller:main',
         'main_controller = ballbot.main_controller:main',
-        'motor_PWM_control = ballbot.motor_PWM_control:main'
+        'motor_PWM_control = ballbot.motor_PWM_control:main',
+        'main_controller_PID = ballbot.main_controller_PID:main',
         ],
     },
 )

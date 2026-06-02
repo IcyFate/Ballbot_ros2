@@ -42,28 +42,33 @@ class PI:
         self.initialized = False                     # flaga pierwszego kroku
 
     def update(self, setpoint, measurement, dt):
-        dt = clamp(float(dt), DT_MIN, DT_MAX)       # stabilny krok czasowy
+        dt = clamp(float(dt), DT_MIN, DT_MAX)        # stabilny krok czasowy
 
         error = setpoint - measurement               # błąd regulacji e = r - y
         if not self.initialized:
             self.initialized = True                  # inicjalizacja regulatora
 
+        self.integral += error * dt                  # całka[k] = całka[k-1] + e[k] * Ts
+        self.integral = clamp(self.integral, -self.i_limit, self.i_limit)
+
         p = self.kp * error                          # człon proporcjonalny
+        temp = p + self.ki * self.integral           # temp = kp * e[k] + ki * całka[k]
 
-        i_candidate = self.integral + error * dt     # całkowanie błędu
-        i_candidate = clamp(i_candidate, -self.i_limit, self.i_limit)  # ograniczenie całki
-
-        u_unsat = p + self.ki * i_candidate          # sygnał przed saturacją
-
-        # Anti-windup przez warunkową akceptację całki
-        if u_unsat >= PWM_MAX and error > 0.0:
-            pass                                     # nie zwiększaj całki przy dodatnim nasyceniu
-        elif u_unsat <= 0.0 and error < 0.0:
-            pass                                     # nie zwiększaj całki przy dolnym nasyceniu
+        # Anti-windup przez cofnięcie całki z równania regulatora
+        if temp > PWM_MAX:
+            u = PWM_MAX
+            if self.ki != 0.0:
+                self.integral = (PWM_MAX - p) / self.ki
+                self.integral = clamp(self.integral, -self.i_limit, self.i_limit)
+        elif temp < 0.0:
+            u = 0.0
+            if self.ki != 0.0:
+                self.integral = (0.0 - p) / self.ki
+                self.integral = clamp(self.integral, -self.i_limit, self.i_limit)
         else:
-            self.integral = i_candidate              # akceptacja całki, gdy nie pogarsza nasycenia
+            u = temp
 
-        return p + self.ki * self.integral, error    # zwracamy też error do logowania
+        return u, error                              # zwracamy też error do logowania
 
     def reset(self):
         self.integral = 0.0                          # wyzerowanie całki
@@ -78,20 +83,20 @@ class WheelVelocityMotorNode(Node):
             Float64MultiArray,
             "vel_from_controller",
             self.ref_callback,
-            10,
+            1,
         )                                             # referencje prędkości
 
         self.state_sub = self.create_subscription(
             Float64MultiArray,
             "wheel_state",
             self.state_callback,
-            10,
+            1,
         )                                             # stan kół / prędkości
 
         self.dir_pub = self.create_publisher(
             Int32MultiArray,
             "motor_direction",
-            10,
+            1,
         )                                             # publikacja kierunku silników
 
         self.ref_vel = [0.0, 0.0, 0.0]                # zadane prędkości
@@ -187,7 +192,7 @@ class WheelVelocityMotorNode(Node):
             ref_abs = abs(ref)
             meas_abs = abs(meas)
 
-            # CZYSTY PI – brak feed-forward
+            # CZYSTY PI - brak feed-forward
             u, error = self.pi_ctrl[i].update(ref_abs, meas_abs, dt)
 
             duty = clamp(u, 0.0, PWM_MAX)

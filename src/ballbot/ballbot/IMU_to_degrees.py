@@ -22,12 +22,16 @@ BURST_STRUCT = struct.Struct('<hhhhhh')
 GYRO_LSB_TO_RAD_S = 0.00875 * math.pi / 180.0
 ACC_LSB_TO_MS2 = 0.244e-3 * 9.80665
 
-ROLL_OFFSET = 0.0261799388
+ROLL_OFFSET = 0.034
 PITCH_OFFSET = -0.0087266463
 
 PI = math.pi
 TWO_PI = 2.0 * math.pi
-ACC_K = 0.15
+
+G = 9.80665
+ACC_K = 0.005
+ACC_FULL_TRUST_ERROR = 0.25
+ACC_NO_TRUST_ERROR = 1.0
 
 
 class TiltEkf:
@@ -79,19 +83,31 @@ class TiltEkf:
         roll += dt * (p + sphi * tth * q + cphi * tth * r)
         pitch += dt * (cphi * q - sphi * r)
 
-        roll_acc = math.atan2(ay, az)
-        pitch_acc = math.atan2(-ax, math.sqrt(ay * ay + az * az))
+        acc_norm = math.sqrt(ax * ax + ay * ay + az * az)
+        acc_error = abs(acc_norm - G)
 
-        y0 = roll_acc - roll
-        if y0 > PI:
-            y0 -= TWO_PI
-        elif y0 < -PI:
-            y0 += TWO_PI
+        if acc_error < ACC_NO_TRUST_ERROR:
+            roll_acc = math.atan2(ay, az)
+            pitch_acc = math.atan2(-ax, math.sqrt(ay * ay + az * az))
 
-        y1 = pitch_acc - pitch
+            y0 = roll_acc - roll
+            if y0 > PI:
+                y0 -= TWO_PI
+            elif y0 < -PI:
+                y0 += TWO_PI
 
-        roll += ACC_K * y0
-        pitch += ACC_K * y1
+            y1 = pitch_acc - pitch
+
+            if acc_error <= ACC_FULL_TRUST_ERROR:
+                k_acc = ACC_K
+            else:
+                scale = (ACC_NO_TRUST_ERROR - acc_error) / (
+                    ACC_NO_TRUST_ERROR - ACC_FULL_TRUST_ERROR
+                )
+                k_acc = ACC_K * scale
+
+            roll += k_acc * y0
+            pitch += k_acc * y1
 
         self.roll = roll
         self.pitch = pitch
