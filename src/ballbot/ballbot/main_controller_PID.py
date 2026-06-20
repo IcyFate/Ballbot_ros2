@@ -17,9 +17,9 @@ r_k = 0.024
 
 # PID
 
-KP = 10
-KI = 0.0
-KD = 0.0
+KP = 5
+KI = 0.2
+KD = 0.6
 
 KP_STEP = 1.0
 KI_STEP = 0.2

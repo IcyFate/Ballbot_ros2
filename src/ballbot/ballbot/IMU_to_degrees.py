@@ -22,8 +22,8 @@ BURST_STRUCT = struct.Struct('<hhhhhh')
 GYRO_LSB_TO_RAD_S = 0.00875 * math.pi / 180.0
 ACC_LSB_TO_MS2 = 0.244e-3 * 9.80665
 
-ROLL_OFFSET = 0.034
-PITCH_OFFSET = -0.0087266463
+ROLL_OFFSET = 0.006
+PITCH_OFFSET = -0.025
 
 PI = math.pi
 TWO_PI = 2.0 * math.pi
@@ -134,7 +134,6 @@ class ImuKalmanNode(Node):
         self.filter = TiltEkf()
 
         self.last_time = time.perf_counter()
-
         self.rx = bytearray(BURST_LEN)
 
         self.msg = Float64MultiArray()
@@ -181,7 +180,6 @@ class ImuKalmanNode(Node):
         )
 
         data = self.msg.data
-
         data[0] = roll + ROLL_OFFSET
         data[1] = pitch + PITCH_OFFSET
         data[2] = p
@@ -196,7 +194,6 @@ class ImuKalmanNode(Node):
 
 def main():
     rclpy.init()
-
     node = ImuKalmanNode()
 
     try:
