@@ -47,6 +47,32 @@ def generate_launch_description():
             name='imu_to_degrees_node',
             output='screen'
         ),
+        
+        # Node(
+        #     package='ballbot',
+        #     executable='imu_to_quaternion',
+        #     name='imu_to_quaternion_node',
+        #     output='screen'
+        # ),
+
+        # Node(
+        #     package='imu_complementary_filter',
+        #     executable='complementary_filter_node',
+        #     name='imu_filter_node',
+        #     output='screen',
+        #     parameters=[{
+        #         'use_mag': False,
+        #         'do_bias_estimation': True,
+        #         'do_adaptive_gain': False,
+        #         'gain_acc': 0.05,
+        #         'gain_mag': 0.0,
+        #         'publish_tf': False,
+        #     }],
+        #     remappings=[
+        #         ('imu/data_raw', '/imu/data_raw'),
+        #         ('imu/data', '/imu/data'),
+        #     ],
+        # ),
 
         # Node(
         #     package='ballbot',
@@ -75,6 +101,13 @@ def generate_launch_description():
             name='main_controller_PID_node',
             output='screen'
         ),
+
+        # Node(
+        #     package='ballbot',
+        #     executable='main_controller_PID_quat',
+        #     name='main_controller_PID_quat_node',
+        #     output='screen'
+        # ),
 
         # Node(
         #     package='ballbot',

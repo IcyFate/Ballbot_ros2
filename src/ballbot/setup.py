@@ -39,6 +39,8 @@ setup(
         'main_controller = ballbot.main_controller:main',
         'motor_PWM_control = ballbot.motor_PWM_control:main',
         'main_controller_PID = ballbot.main_controller_PID:main',
+        'imu_to_quaternion = ballbot.imu_to_quaternion:main',
+        'main_controller_PID_quat = ballbot.main_controller_PID_quat:main',
         ],
     },
 )
