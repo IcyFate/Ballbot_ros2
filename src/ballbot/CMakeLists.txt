@@ -1,0 +1,60 @@
+cmake_minimum_required(VERSION 3.8)
+project(ballbot)
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(Threads REQUIRED)
+
+find_path(PIGPIO_INCLUDE_DIR pigpiod_if2.h)
+find_library(PIGPIOD_IF2_LIBRARY pigpiod_if2)
+find_library(RT_LIBRARY rt)
+
+if(NOT PIGPIO_INCLUDE_DIR OR NOT PIGPIOD_IF2_LIBRARY)
+  message(FATAL_ERROR "pigpiod_if2 not found. Install pigpio development files before building ballbot.")
+endif()
+
+function(resolve_ballbot_source output_var source)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ballbot/${source}")
+    set(${output_var} "ballbot/${source}" PARENT_SCOPE)
+  elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/${source}")
+    set(${output_var} "src/${source}" PARENT_SCOPE)
+  else()
+    message(FATAL_ERROR "Missing source file ${source}. Expected ballbot/${source} or src/${source}.")
+  endif()
+endfunction()
+
+function(add_ballbot_node target source)
+  resolve_ballbot_source(node_source ${source})
+  add_executable(${target} ${node_source})
+  ament_target_dependencies(${target} rclcpp std_msgs)
+  target_link_libraries(${target} Threads::Threads)
+  install(TARGETS ${target} DESTINATION lib/${PROJECT_NAME})
+endfunction()
+
+function(add_ballbot_pigpio_node target source)
+  add_ballbot_node(${target} ${source})
+  target_include_directories(${target} PRIVATE ${PIGPIO_INCLUDE_DIR})
+  target_link_libraries(${target} ${PIGPIOD_IF2_LIBRARY})
+  if(RT_LIBRARY)
+    target_link_libraries(${target} ${RT_LIBRARY})
+  endif()
+endfunction()
+
+add_ballbot_node(IMU_to_degrees IMU_to_degrees.cpp)
+add_ballbot_pigpio_node(encoder_read encoder_read.cpp)
+add_ballbot_pigpio_node(velocity_controller velocity_controller.cpp)
+add_ballbot_node(main_controller_PID main_controller_PID.cpp)
+add_ballbot_node(main_controller main_controller.cpp)
+
+install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
+
+ament_package()
