@@ -8,10 +8,20 @@ def generate_launch_description():
 
         Node(
             package='ballbot',
-            executable='encoder_read',
-            name='encoder_read_node',
-            output='screen'
+            executable='ballbot_combined',
+            name='ballbot_combined_node',
+            output='screen',
+            parameters=[{
+                'publish_compat_topics': True,
+            }],
         ),
+
+        # Node(
+        #     package='ballbot',
+        #     executable='encoder_read',
+        #     name='encoder_read_node',
+        #     output='screen'
+        # ),
 
         # Node(
         #     package='ballbot',
@@ -41,12 +51,12 @@ def generate_launch_description():
         #     output='screen'
         # ),
 
-        Node(
-            package='ballbot',
-            executable='IMU_to_degrees',
-            name='imu_to_degrees_node',
-            output='screen'
-        ),
+        # Node(
+        #     package='ballbot',
+        #     executable='IMU_to_degrees',
+        #     name='imu_to_degrees_node',
+        #     output='screen'
+        # ),
         
         # Node(
         #     package='ballbot',
@@ -81,12 +91,12 @@ def generate_launch_description():
         #     output='screen'
         # ),
 
-        Node(
-            package='ballbot',
-            executable='velocity_controller',
-            name='velocity_controller_node',
-            output='screen'
-        ),
+        # Node(
+        #     package='ballbot',
+        #     executable='velocity_controller',
+        #     name='velocity_controller_node',
+        #     output='screen'
+        # ),
 
         # Node(
         #     package='ballbot',
@@ -95,12 +105,12 @@ def generate_launch_description():
         #     output='screen'
         # ),
 
-        Node(
-            package='ballbot',
-            executable='main_controller_PID',
-            name='main_controller_PID_node',
-            output='screen'
-        ),
+        # Node(
+        #     package='ballbot',
+        #     executable='main_controller_PID',
+        #     name='main_controller_PID_node',
+        #     output='screen'
+        # ),
 
         # Node(
         #     package='ballbot',

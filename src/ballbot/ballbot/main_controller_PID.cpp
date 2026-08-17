@@ -19,10 +19,10 @@
 
 namespace
 {
-constexpr double r_k = 0.024;
+constexpr double r_k = 0.0425;
 
 constexpr double KP = 5.0;
-constexpr double KI = 0.2;
+constexpr double KI = 0.0;
 constexpr double KD = 0.6;
 
 constexpr double KP_STEP = 1.0;

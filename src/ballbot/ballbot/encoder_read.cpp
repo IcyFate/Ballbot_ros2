@@ -22,7 +22,7 @@ constexpr int ENCODER_PIN_2A = 25;
 constexpr int ENCODER_PIN_3A = 23;
 
 constexpr int PPR = 480;
-constexpr double WHEEL_DIAMETER = 0.048;
+constexpr double WHEEL_DIAMETER = 0.085;
 
 constexpr unsigned GLITCH_US = 150;
 constexpr double PUBLISH_RATE = 1000.0;

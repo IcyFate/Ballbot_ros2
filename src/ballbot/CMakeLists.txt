@@ -53,6 +53,7 @@ add_ballbot_node(IMU_to_degrees IMU_to_degrees.cpp)
 add_ballbot_pigpio_node(encoder_read encoder_read.cpp)
 add_ballbot_pigpio_node(velocity_controller velocity_controller.cpp)
 add_ballbot_node(main_controller_PID main_controller_PID.cpp)
+add_ballbot_pigpio_node(ballbot_combined ballbot_combined.cpp)
 add_ballbot_node(main_controller main_controller.cpp)
 
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
