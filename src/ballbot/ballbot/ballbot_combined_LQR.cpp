@@ -14,6 +14,7 @@
 #include <linux/i2c.h>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <sys/ioctl.h>
@@ -359,72 +360,38 @@ private:
 };
 }  // namespace wheel_velocity
 
-namespace balance_pid
+namespace lqr_control
 {
 constexpr double r_k = 0.0425;
 
-constexpr double KP = 20.0;
-constexpr double KI = 45;
-constexpr double KD = 1.6;
+constexpr double K1 = -20.0;
+constexpr double K2 = -10.0;
+constexpr double K3 = 1.0;
+constexpr double K4 = 1.0;
 
-constexpr double KP_STEP = 1.0;
-constexpr double KI_STEP = 0.2;
-constexpr double KD_STEP = 0.2;
+constexpr double K1_STEP = 1.0;
+constexpr double K2_STEP = 1.0;
+constexpr double K3_STEP = 0.2;
+constexpr double K4_STEP = 0.2;
 
-constexpr double I_LIMIT = 1.0;
+constexpr double POS_SIGN_X = -1.0;
+constexpr double POS_SIGN_Y = -1.0;
+constexpr double VEL_SIGN_X = -1.0;
+constexpr double VEL_SIGN_Y = -1.0;
 
 constexpr double MIN_COMMAND_RAD = 2.2;
 constexpr double MAX_W_RAD = 35.0;
 
+constexpr double R_BALL = 0.125;
+
 constexpr double PI_VALUE = 3.14159265358979323846;
 constexpr double SQRT3_2 = 0.86602540378;
+constexpr double SQRT2_2 = 0.70710678;
 
 constexpr double ANGLE_DEADBAND = 0.0;
-constexpr double CONTROL_PERIOD_S = 0.004;
-
-class AnglePid
-{
-public:
-  void reset()
-  {
-    integral_ = 0.0;
-    prev_error_ = 0.0;
-    derivative_ = 0.0;
-    initialized_ = false;
-  }
-
-  double update(double error, double error_rate, double dt, double kp, double ki, double kd)
-  {
-    if (!initialized_) {
-      prev_error_ = error;
-      initialized_ = true;
-    }
-
-    integral_ += error * dt;
-    integral_ = std::max(-I_LIMIT, std::min(I_LIMIT, integral_));
-
-    derivative_ = error_rate;
-    prev_error_ = error;
-
-    return kp * error + ki * integral_ + kd * derivative_;
-  }
-
-  void anti_windup(double saturated_output, double kp, double ki, double kd)
-  {
-    if (ki == 0.0) {
-      return;
-    }
-
-    integral_ = (saturated_output - kp * prev_error_ - kd * derivative_) / ki;
-    integral_ = std::max(-I_LIMIT, std::min(I_LIMIT, integral_));
-  }
-
-private:
-  double integral_{0.0};
-  double prev_error_{0.0};
-  double derivative_{0.0};
-  bool initialized_{false};
-};
+constexpr double RATE_DEADBAND = 0.0;
+constexpr double POSITION_DEADBAND = 0.0;
+constexpr double VELOCITY_DEADBAND = 0.0;
 
 struct TerminalState
 {
@@ -476,7 +443,7 @@ void restore_terminal(TerminalState & terminal)
     ::fclose(terminal.file);
   }
 }
-}  // namespace balance_pid
+}  // namespace lqr_control
 
 class BallbotCombinedNode : public rclcpp::Node
 {
@@ -486,7 +453,7 @@ public:
     imu_i2c_("/dev/i2c-1", imu_filter::I2C_ADDRESS),
     imu_last_time_(std::chrono::steady_clock::now()),
     wheel_last_time_(get_clock()->now()),
-    pid_last_time_(get_clock()->now())
+    lqr_last_time_(get_clock()->now())
   {
     publish_compat_topics_ = declare_parameter<bool>("publish_compat_topics", true);
 
@@ -510,21 +477,21 @@ public:
 
     imu_msg_.data.assign(8, 0.0);
     encoder_msg_.data.assign(16, 0.0);
-    pid_msg_.data = {0.0, 0.0, 0.0};
+    lqr_msg_.data = {0.0, 0.0, 0.0};
     dir_msg_.data = {0, 0, 0};
 
     encoder_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    pid_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    lqr_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
     encoder_timer_ = create_wall_timer(
       std::chrono::duration<double>(1.0 / encoder_odom::PUBLISH_RATE),
       std::bind(&BallbotCombinedNode::encoder_publish_state, this),
       encoder_group_);
 
-    pid_timer_ = create_wall_timer(
-      std::chrono::duration<double>(balance_pid::CONTROL_PERIOD_S),
-      std::bind(&BallbotCombinedNode::pid_control_loop, this),
-      pid_group_);
+    lqr_timer_ = create_wall_timer(
+      std::chrono::duration<double>(0.004),
+      std::bind(&BallbotCombinedNode::lqr_control_loop, this),
+      lqr_group_);
 
     wheel_stop_all();
 
@@ -538,8 +505,8 @@ public:
       publish_compat_topics_ ? "true" : "false");
     RCLCPP_INFO(
       get_logger(),
-      "Keys: q/a -> Kp +/-1, w/s -> Ki +/-1, e/d -> Kd +/-0.2, x -> exit");
-    pid_print_status();
+      "Keys: q/a -> K1 +/-1, w/s -> K2 +/-1, e/d -> K3 +/-0.2, r/f -> K4 +/-0.2, x -> exit");
+    lqr_print_status();
   }
 
   ~BallbotCombinedNode() override
@@ -559,8 +526,8 @@ public:
     if (encoder_timer_) {
       encoder_timer_->cancel();
     }
-    if (pid_timer_) {
-      pid_timer_->cancel();
+    if (lqr_timer_) {
+      lqr_timer_->cancel();
     }
 
     if (imu_thread_.joinable()) {
@@ -912,6 +879,41 @@ private:
           static_cast<double>(msg.data[wheel_velocity::WHEEL_STATE_ANGULAR_VEL_IDXS[i]]);
       }
 
+      const double s1_raw = static_cast<double>(msg.data[3]);
+      const double s2_raw = static_cast<double>(msg.data[8]);
+      const double s3_raw = static_cast<double>(msg.data[13]);
+
+      const double u1_raw = static_cast<double>(msg.data[5]);
+      const double u2_raw = static_cast<double>(msg.data[10]);
+      const double u3_raw = static_cast<double>(msg.data[15]);
+
+      const double s1 = s3_raw;
+      const double s2 = s2_raw;
+      const double s3 = s1_raw;
+
+      const double u1 = u3_raw;
+      const double u2 = u2_raw;
+      const double u3 = u1_raw;
+
+      const double c = lqr_control::SQRT2_2;
+
+      const double psi_pos = -s1 / (lqr_control::R_BALL * c);
+      const double phi_pos = (s3 - s2) /
+        (2.0 * lqr_control::SQRT3_2 * lqr_control::R_BALL * c);
+      lqr_pos_x_meas_ = lqr_control::R_BALL * c * (phi_pos + psi_pos);
+      lqr_pos_y_meas_ = lqr_control::R_BALL * c * (-phi_pos + psi_pos);
+
+      const double psi_vel = -u1 / (lqr_control::R_BALL * c);
+      const double phi_vel = (u3 - u2) /
+        (2.0 * lqr_control::SQRT3_2 * lqr_control::R_BALL * c);
+      lqr_vel_x_meas_ = lqr_control::R_BALL * c * (phi_vel + psi_vel);
+      lqr_vel_y_meas_ = lqr_control::R_BALL * c * (-phi_vel + psi_vel);
+
+      if (!lqr_pos_x_ref_.has_value()) {
+        lqr_pos_x_ref_ = lqr_pos_x_meas_;
+        lqr_pos_y_ref_ = lqr_pos_y_meas_;
+      }
+
       const auto now = get_clock()->now();
       double dt = (now - wheel_last_time_).nanoseconds() * 1e-9;
       wheel_last_time_ = now;
@@ -963,28 +965,32 @@ private:
     }
   }
 
-  void pid_print_status()
+  void lqr_print_status()
   {
-    double kp = 0.0;
-    double ki = 0.0;
-    double kd = 0.0;
+    double k1 = 0.0;
+    double k2 = 0.0;
+    double k3 = 0.0;
+    double k4 = 0.0;
     {
-      std::lock_guard<std::mutex> guard(pid_gain_lock_);
-      kp = pid_kp_;
-      ki = pid_ki_;
-      kd = pid_kd_;
+      std::lock_guard<std::mutex> guard(lqr_gain_lock_);
+      k1 = lqr_k1_;
+      k2 = lqr_k2_;
+      k3 = lqr_k3_;
+      k4 = lqr_k4_;
     }
 
-    RCLCPP_INFO(get_logger(), "ACTUAL: Kp=%.2f, Ki=%.2f, Kd=%.2f", kp, ki, kd);
+    RCLCPP_INFO(
+      get_logger(), "ACTUAL: K1=%.2f, K2=%.2f, K3=%.2f, K4=%.2f",
+      k1, k2, k3, k4);
   }
 
   void keyboard_loop()
   {
-    balance_pid::TerminalState terminal;
+    lqr_control::TerminalState terminal;
     bool configured = false;
 
     try {
-      terminal = balance_pid::setup_terminal();
+      terminal = lqr_control::setup_terminal();
       configured = true;
 
       while (!keyboard_stop_.load()) {
@@ -1008,19 +1014,23 @@ private:
 
         bool changed = true;
         {
-          std::lock_guard<std::mutex> guard(pid_gain_lock_);
+          std::lock_guard<std::mutex> guard(lqr_gain_lock_);
           if (ch == 'q') {
-            pid_kp_ += balance_pid::KP_STEP;
+            lqr_k1_ += lqr_control::K1_STEP;
           } else if (ch == 'a') {
-            pid_kp_ -= balance_pid::KP_STEP;
+            lqr_k1_ -= lqr_control::K1_STEP;
           } else if (ch == 'w') {
-            pid_ki_ += balance_pid::KI_STEP;
+            lqr_k2_ += lqr_control::K2_STEP;
           } else if (ch == 's') {
-            pid_ki_ -= balance_pid::KI_STEP;
+            lqr_k2_ -= lqr_control::K2_STEP;
           } else if (ch == 'e') {
-            pid_kd_ += balance_pid::KD_STEP;
+            lqr_k3_ += lqr_control::K3_STEP;
           } else if (ch == 'd') {
-            pid_kd_ -= balance_pid::KD_STEP;
+            lqr_k3_ -= lqr_control::K3_STEP;
+          } else if (ch == 'r') {
+            lqr_k4_ += lqr_control::K4_STEP;
+          } else if (ch == 'f') {
+            lqr_k4_ -= lqr_control::K4_STEP;
           } else if (ch == 'x') {
             RCLCPP_INFO(get_logger(), "Exit requested from keyboard");
             keyboard_stop_.store(true);
@@ -1032,7 +1042,7 @@ private:
         }
 
         if (changed) {
-          pid_print_status();
+          lqr_print_status();
         }
       }
     } catch (const std::exception & error) {
@@ -1040,11 +1050,11 @@ private:
     }
 
     if (configured) {
-      balance_pid::restore_terminal(terminal);
+      lqr_control::restore_terminal(terminal);
     }
   }
 
-  double pid_deadband(double x, double threshold)
+  double lqr_deadband(double x, double threshold)
   {
     if (std::abs(x) < threshold) {
       return 0.0;
@@ -1052,34 +1062,36 @@ private:
     return x;
   }
 
-  double pid_min_command_filter(double x)
+  double lqr_min_command_filter(double x)
   {
-    if (std::abs(x) < balance_pid::MIN_COMMAND_RAD) {
+    if (std::abs(x) < lqr_control::MIN_COMMAND_RAD) {
       return 0.0;
     }
     return x;
   }
 
-  std::tuple<double, double, double, double> pid_limit_wheels(double w1, double w2, double w3)
+  std::tuple<double, double, double> lqr_limit_wheels(double w1, double w2, double w3)
   {
     const double max_w = std::max({std::abs(w1), std::abs(w2), std::abs(w3)});
-    double scale = 1.0;
 
-    if (max_w > balance_pid::MAX_W_RAD) {
-      scale = balance_pid::MAX_W_RAD / max_w;
+    if (max_w > lqr_control::MAX_W_RAD) {
+      const double scale = lqr_control::MAX_W_RAD / max_w;
       w1 *= scale;
       w2 *= scale;
       w3 *= scale;
+
+      lqr_cmd_vel_x_ *= scale;
+      lqr_cmd_vel_y_ *= scale;
     }
 
-    return {w1, w2, w3, scale};
+    return {w1, w2, w3};
   }
 
-  void pid_control_loop()
+  void lqr_control_loop()
   {
     const auto now = get_clock()->now();
-    double dt = (now - pid_last_time_).nanoseconds() * 1e-9;
-    pid_last_time_ = now;
+    double dt = (now - lqr_last_time_).nanoseconds() * 1e-9;
+    lqr_last_time_ = now;
 
     if (dt <= 0.0) {
       return;
@@ -1089,14 +1101,16 @@ private:
       dt = 0.02;
     }
 
-    double kp = 0.0;
-    double ki = 0.0;
-    double kd = 0.0;
+    double k1 = 0.0;
+    double k2 = 0.0;
+    double k3 = 0.0;
+    double k4 = 0.0;
     {
-      std::lock_guard<std::mutex> guard(pid_gain_lock_);
-      kp = pid_kp_;
-      ki = pid_ki_;
-      kd = pid_kd_;
+      std::lock_guard<std::mutex> guard(lqr_gain_lock_);
+      k1 = lqr_k1_;
+      k2 = lqr_k2_;
+      k3 = lqr_k3_;
+      k4 = lqr_k4_;
     }
 
     double roll = 0.0;
@@ -1111,51 +1125,81 @@ private:
       pitch_rate = imu_state_[3];
     }
 
-    const double theta_x = pid_deadband(pitch, balance_pid::ANGLE_DEADBAND);
-    const double theta_y = pid_deadband(roll, balance_pid::ANGLE_DEADBAND);
-    const double theta_dot_x = pitch_rate;
-    const double theta_dot_y = roll_rate;
-
-    if (theta_x == 0.0 && theta_y == 0.0) {
-      pid_x_.reset();
-      pid_y_.reset();
-
-      pid_cmd_vel_x_ = 0.0;
-      pid_cmd_vel_y_ = 0.0;
-    } else {
-      pid_cmd_vel_x_ = pid_x_.update(theta_x, theta_dot_x, dt, kp, ki, kd);
-      pid_cmd_vel_y_ = pid_y_.update(theta_y, theta_dot_y, dt, kp, ki, kd);
+    double pos_x_meas = 0.0;
+    double pos_y_meas = 0.0;
+    double vel_x_meas = 0.0;
+    double vel_y_meas = 0.0;
+    std::optional<double> pos_x_ref;
+    std::optional<double> pos_y_ref;
+    {
+      std::lock_guard<std::mutex> guard(wheel_lock_);
+      pos_x_meas = lqr_pos_x_meas_;
+      pos_y_meas = lqr_pos_y_meas_;
+      vel_x_meas = lqr_vel_x_meas_;
+      vel_y_meas = lqr_vel_y_meas_;
+      pos_x_ref = lqr_pos_x_ref_;
+      pos_y_ref = lqr_pos_y_ref_;
     }
 
-    double vx_r = 0.70710678 * pid_cmd_vel_x_ - 0.70710678 * pid_cmd_vel_y_;
-    double vy_r = 0.70710678 * pid_cmd_vel_x_ + 0.70710678 * pid_cmd_vel_y_;
+    const double theta_x = lqr_deadband(pitch, lqr_control::ANGLE_DEADBAND);
+    const double theta_y = lqr_deadband(roll, lqr_control::ANGLE_DEADBAND);
 
-    double V1 = -vy_r * std::cos(balance_pid::PI_VALUE / 4.0);
-    double V2 = (-balance_pid::SQRT3_2 * vx_r + 0.5 * vy_r) *
-      std::cos(balance_pid::PI_VALUE / 4.0);
-    double V3 = (balance_pid::SQRT3_2 * vx_r + 0.5 * vy_r) *
-      std::cos(balance_pid::PI_VALUE / 4.0);
+    const double theta_dot_x = lqr_deadband(pitch_rate, lqr_control::RATE_DEADBAND);
+    const double theta_dot_y = lqr_deadband(roll_rate, lqr_control::RATE_DEADBAND);
 
-    double w1 = V1 / balance_pid::r_k;
-    double w2 = V2 / balance_pid::r_k;
-    double w3 = V3 / balance_pid::r_k;
-
-    double wheel_scale = 1.0;
-    std::tie(w1, w2, w3, wheel_scale) = pid_limit_wheels(w1, w2, w3);
-
-    if (wheel_scale < 1.0) {
-      pid_cmd_vel_x_ *= wheel_scale;
-      pid_cmd_vel_y_ *= wheel_scale;
-      vx_r *= wheel_scale;
-      vy_r *= wheel_scale;
-
-      pid_x_.anti_windup(pid_cmd_vel_x_, kp, ki, kd);
-      pid_y_.anti_windup(pid_cmd_vel_y_, kp, ki, kd);
+    double px_fb = 0.0;
+    double py_fb = 0.0;
+    if (pos_x_ref.has_value() && pos_y_ref.has_value()) {
+      px_fb = lqr_deadband(pos_x_meas - pos_x_ref.value(), lqr_control::POSITION_DEADBAND);
+      py_fb = lqr_deadband(pos_y_meas - pos_y_ref.value(), lqr_control::POSITION_DEADBAND);
     }
 
-    w1 = pid_min_command_filter(w1);
-    w2 = pid_min_command_filter(w2);
-    w3 = pid_min_command_filter(w3);
+    const double vx_fb = lqr_deadband(vel_x_meas, lqr_control::VELOCITY_DEADBAND);
+    const double vy_fb = lqr_deadband(vel_y_meas, lqr_control::VELOCITY_DEADBAND);
+
+    const double ax = -(k1 * theta_x + k2 * theta_dot_x +
+      k3 * (lqr_control::POS_SIGN_X * px_fb) + k4 * (lqr_control::VEL_SIGN_X * vx_fb));
+
+    const double ay = -(k1 * theta_y + k2 * theta_dot_y +
+      k3 * (lqr_control::POS_SIGN_Y * py_fb) + k4 * (lqr_control::VEL_SIGN_Y * vy_fb));
+
+    lqr_cmd_vel_x_ += ax * dt;
+    lqr_cmd_vel_y_ += ay * dt;
+
+    if (
+      std::abs(px_fb) < lqr_control::POSITION_DEADBAND &&
+      std::abs(py_fb) < lqr_control::POSITION_DEADBAND &&
+      std::abs(vx_fb) < lqr_control::VELOCITY_DEADBAND &&
+      std::abs(vy_fb) < lqr_control::VELOCITY_DEADBAND &&
+      std::abs(theta_x) < lqr_control::ANGLE_DEADBAND &&
+      std::abs(theta_y) < lqr_control::ANGLE_DEADBAND &&
+      std::abs(theta_dot_x) < lqr_control::RATE_DEADBAND &&
+      std::abs(theta_dot_y) < lqr_control::RATE_DEADBAND)
+    {
+      lqr_cmd_vel_x_ = 0.0;
+      lqr_cmd_vel_y_ = 0.0;
+    }
+
+    const double vx_r = lqr_control::SQRT2_2 * lqr_cmd_vel_x_ -
+      lqr_control::SQRT2_2 * lqr_cmd_vel_y_;
+    const double vy_r = lqr_control::SQRT2_2 * lqr_cmd_vel_x_ +
+      lqr_control::SQRT2_2 * lqr_cmd_vel_y_;
+
+    const double V1 = -vy_r * std::cos(lqr_control::PI_VALUE / 4.0);
+    const double V2 = (-lqr_control::SQRT3_2 * vx_r + 0.5 * vy_r) *
+      std::cos(lqr_control::PI_VALUE / 4.0);
+    const double V3 = (lqr_control::SQRT3_2 * vx_r + 0.5 * vy_r) *
+      std::cos(lqr_control::PI_VALUE / 4.0);
+
+    double w1 = V1 / lqr_control::r_k;
+    double w2 = V2 / lqr_control::r_k;
+    double w3 = V3 / lqr_control::r_k;
+
+    std::tie(w1, w2, w3) = lqr_limit_wheels(w1, w2, w3);
+
+    w1 = lqr_min_command_filter(w1);
+    w2 = lqr_min_command_filter(w2);
+    w3 = lqr_min_command_filter(w3);
 
     std::array<double, wheel_velocity::WHEEL_COUNT> refs{{
       static_cast<double>(-w3),
@@ -1164,21 +1208,21 @@ private:
 
     wheel_ref_update(refs);
 
-    pid_msg_.data[0] = refs[0];
-    pid_msg_.data[1] = refs[1];
-    pid_msg_.data[2] = refs[2];
+    lqr_msg_.data[0] = refs[0];
+    lqr_msg_.data[1] = refs[1];
+    lqr_msg_.data[2] = refs[2];
 
     if (publish_compat_topics_ && vel_pub_) {
-      vel_pub_->publish(pid_msg_);
+      vel_pub_->publish(lqr_msg_);
     }
 
-    pid_log_counter_ += 1;
-    if (pid_log_counter_ >= 100) {
-      pid_log_counter_ = 0;
+    lqr_log_counter_ += 1;
+    if (lqr_log_counter_ >= 100) {
+      lqr_log_counter_ = 0;
       RCLCPP_INFO(
         get_logger(),
-        "pitch=%.4f roll=%.4f cmd_x=%.4f cmd_y=%.4f vx=%.4f vy=%.4f w1=%.2f w2=%.2f w3=%.2f",
-        pitch, roll, pid_cmd_vel_x_, pid_cmd_vel_y_, vx_r, vy_r, w1, w2, w3);
+        "pitch=%.4f roll=%.4f px_used=%.4f py_used=%.4f vx_meas=%.4f vy_meas=%.4f ax=%.4f ay=%.4f w1=%.2f w2=%.2f w3=%.2f",
+        pitch, roll, pos_x_meas, pos_y_meas, vel_x_meas, vel_y_meas, ax, ay, w1, w2, w3);
     }
   }
 
@@ -1191,9 +1235,9 @@ private:
   rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr dir_pub_;
 
   rclcpp::CallbackGroup::SharedPtr encoder_group_;
-  rclcpp::CallbackGroup::SharedPtr pid_group_;
+  rclcpp::CallbackGroup::SharedPtr lqr_group_;
   rclcpp::TimerBase::SharedPtr encoder_timer_;
-  rclcpp::TimerBase::SharedPtr pid_timer_;
+  rclcpp::TimerBase::SharedPtr lqr_timer_;
 
   int pi_{-1};
   std::atomic<bool> cleaned_up_{false};
@@ -1243,17 +1287,25 @@ private:
     wheel_velocity::PIController(3.5, 23.0, 120.0)}};
   std_msgs::msg::Int32MultiArray dir_msg_;
 
-  double pid_cmd_vel_x_{0.0};
-  double pid_cmd_vel_y_{0.0};
-  double pid_kp_{balance_pid::KP};
-  double pid_ki_{balance_pid::KI};
-  double pid_kd_{balance_pid::KD};
-  std::mutex pid_gain_lock_;
-  balance_pid::AnglePid pid_x_;
-  balance_pid::AnglePid pid_y_;
-  rclcpp::Time pid_last_time_;
-  int pid_log_counter_{0};
-  std_msgs::msg::Float64MultiArray pid_msg_;
+  double lqr_pos_x_meas_{0.0};
+  double lqr_pos_y_meas_{0.0};
+  double lqr_vel_x_meas_{0.0};
+  double lqr_vel_y_meas_{0.0};
+  std::optional<double> lqr_pos_x_ref_;
+  std::optional<double> lqr_pos_y_ref_;
+
+  double lqr_cmd_vel_x_{0.0};
+  double lqr_cmd_vel_y_{0.0};
+
+  double lqr_k1_{lqr_control::K1};
+  double lqr_k2_{lqr_control::K2};
+  double lqr_k3_{lqr_control::K3};
+  double lqr_k4_{lqr_control::K4};
+  std::mutex lqr_gain_lock_;
+  rclcpp::Time lqr_last_time_;
+  int lqr_log_counter_{0};
+  std_msgs::msg::Float64MultiArray lqr_msg_;
+
   std::atomic<bool> keyboard_stop_{false};
   std::thread keyboard_thread_;
 };

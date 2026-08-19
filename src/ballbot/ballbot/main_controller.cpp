@@ -20,7 +20,7 @@
 
 namespace
 {
-constexpr double r_k = 0.024;
+constexpr double r_k = 0.0425;
 
 constexpr double K1 = -20.0;
 constexpr double K2 = -10.0;
