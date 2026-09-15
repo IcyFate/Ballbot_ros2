@@ -1,1 +1,1 @@
-Project of a ballbot using ROS2. Work in progress. 
+Project of a ballbot using ROS2 in Python and C++. Work in progress. 
