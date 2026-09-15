@@ -11,8 +11,8 @@ def generate_launch_description():
 
         Node(
             package='ballbot',
-            executable='ballbot_combined_LQR',
-            name='ballbot_combined_LQR_node',
+            executable='ballbot_combined',
+            name='ballbot_combined_node',
             output='screen',
         ),
 
